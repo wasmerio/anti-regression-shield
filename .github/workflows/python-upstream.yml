@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   run-python:
@@ -69,3 +70,16 @@ jobs:
             --source-dir . \
             --branch "${{ github.event.inputs.wasmer_ref || 'main' }}" \
             --compare-ref "${{ github.event.inputs.compare_ref || 'origin/main' }}"
+
+      - name: Create regression issue
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 main.py create-regression-issue \
+            --repo . \
+            --repo-full-name "${{ github.repository }}" \
+            --comparison comparison.json \
+            --baseline-metadata .git/compat-tests-baseline-metadata.json \
+            --candidate-metadata metadata.json \
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

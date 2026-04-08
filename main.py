@@ -355,6 +355,54 @@ def render_comment(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_regression_issue_title(candidate_meta: dict[str, Any], language: str = "Python") -> str:
+    branch = candidate_meta["wasmer"]["branch"]
+    commit = candidate_meta["wasmer"]["commit"][:7]
+    return f"{language} upstream regressions on {branch} @ {commit}"
+
+
+def create_regression_issue(args: argparse.Namespace) -> int:
+    comparison = load_json(Path(args.comparison))
+    if not comparison.get("regressions"):
+        print("No regressions detected; skipping issue creation.", flush=True)
+        return 0
+
+    baseline_meta = load_json(Path(args.baseline_metadata))
+    candidate_meta = load_json(Path(args.candidate_metadata))
+    repo = Path(args.repo).resolve() if args.repo else None
+    results_commit = git_head_commit(repo) if repo and (repo / ".git").exists() else None
+
+    body = render_summary_text(
+        comparison,
+        baseline_meta,
+        candidate_meta,
+        results_commit=results_commit,
+        language="Python",
+    )
+    if args.run_url:
+        body += f"\nWorkflow run:\n- {args.run_url}\n"
+
+    title = make_regression_issue_title(candidate_meta, language="Python")
+    body_file = (repo or Path.cwd()) / ".git" / "compat-tests-issue-body.txt" if repo else Path(".git/compat-tests-issue-body.txt")
+    write_text(body_file, body)
+    proc = run_capture(
+        [
+            "gh",
+            "issue",
+            "create",
+            "--repo",
+            args.repo_full_name,
+            "--title",
+            title,
+            "--body-file",
+            str(body_file),
+        ],
+        cwd=repo,
+    )
+    print(proc.stdout.strip(), flush=True)
+    return 0
+
+
 def maybe_setup_gh_git_auth(repo: Path) -> None:
     if shutil.which("gh"):
         subprocess.run(["gh", "auth", "setup-git"], cwd=repo, text=True, check=False)
@@ -421,6 +469,7 @@ def publish_snapshot(args: argparse.Namespace) -> int:
         }
 
     summary_text = render_summary_text(comparison, baseline_meta, metadata, language="Python")
+    write_json(repo / ".git" / "compat-tests-baseline-metadata.json", baseline_meta)
     write_json(repo / "status.json", status)
     write_json(repo / "metadata.json", metadata)
     write_json(repo / "comparison.json", comparison)
@@ -472,10 +521,19 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--repo", default=".")
     publish.add_argument("--source-dir", default=".")
     publish.add_argument("--branch", required=True)
-    publish.add_argument("--compare-ref", default="HEAD")
+    publish.add_argument("--compare-ref", default="origin/main")
     publish.add_argument("--git-user-name", default="compat-tests[bot]")
     publish.add_argument("--git-user-email", default="compat-tests[bot]@users.noreply.github.com")
     publish.set_defaults(func=publish_snapshot)
+
+    issue = sub.add_parser("create-regression-issue", help="Create a GitHub issue when regressions are present")
+    issue.add_argument("--repo", default=".")
+    issue.add_argument("--repo-full-name", required=True)
+    issue.add_argument("--comparison", required=True)
+    issue.add_argument("--baseline-metadata", required=True)
+    issue.add_argument("--candidate-metadata", required=True)
+    issue.add_argument("--run-url")
+    issue.set_defaults(func=create_regression_issue)
 
     return parser
 
