@@ -466,6 +466,45 @@ def render_comment(args: argparse.Namespace) -> int:
     return 0
 
 
+def prepare_pr_comment(args: argparse.Namespace) -> int:
+    comparison = load_json(Path(args.comparison))
+    baseline_meta = load_json(Path(args.baseline_metadata))
+    candidate_meta = load_json(Path(args.candidate_metadata))
+
+    expected = (args.expected_wasmer_sha or "").strip()
+    actual = candidate_meta.get("wasmer", {}).get("commit", "")
+    if expected and actual != expected:
+        body = (
+            "Python upstream result: ERROR\n\n"
+            "compat-tests completed, but the published snapshot does not match the expected Wasmer SHA.\n\n"
+            "More info:\n"
+            f"- expected Wasmer SHA: `{expected}`\n"
+            f"- published Wasmer SHA: `{actual}`\n"
+            f"- compat-tests workflow: {args.run_url}\n"
+            f"- compat-tests results commit: https://github.com/{args.results_repo}/commit/{args.results_commit}\n"
+        )
+    else:
+        body = render_summary_text(
+            comparison,
+            baseline_meta,
+            candidate_meta,
+            results_commit=args.results_commit,
+            language="Python",
+        ).rstrip()
+        body += (
+            "\n\nMore info:\n"
+            f"- compat-tests workflow: {args.run_url}\n"
+            f"- compat-tests results commit: https://github.com/{args.results_repo}/commit/{args.results_commit}\n"
+            f"- compat-tests branch: https://github.com/{args.results_repo}/tree/{candidate_meta['wasmer']['branch']}\n"
+        )
+
+    if args.output:
+        write_text(Path(args.output), body + ("\n" if not body.endswith("\n") else ""))
+    else:
+        print(body, end="" if body.endswith("\n") else "\n")
+    return 0
+
+
 def make_regression_issue_title(candidate_meta: dict[str, Any], language: str = "Python") -> str:
     branch = candidate_meta["wasmer"]["branch"]
     commit = candidate_meta["wasmer"]["commit"][:7]
@@ -577,6 +616,7 @@ def publish_snapshot(args: argparse.Namespace) -> int:
     )
     if branch_status == status and same_identity:
         print("No snapshot changes to publish.", flush=True)
+        print(git_head_commit(repo), flush=True)
         return 0
 
     compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
@@ -635,6 +675,17 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--results-commit")
     comment.add_argument("--output")
     comment.set_defaults(func=render_comment)
+
+    pr_comment = sub.add_parser("prepare-pr-comment", help="Prepare the full PR comment body")
+    pr_comment.add_argument("--comparison", required=True)
+    pr_comment.add_argument("--baseline-metadata", required=True)
+    pr_comment.add_argument("--candidate-metadata", required=True)
+    pr_comment.add_argument("--results-repo", required=True)
+    pr_comment.add_argument("--results-commit", required=True)
+    pr_comment.add_argument("--run-url", required=True)
+    pr_comment.add_argument("--expected-wasmer-sha")
+    pr_comment.add_argument("--output")
+    pr_comment.set_defaults(func=prepare_pr_comment)
 
     publish = sub.add_parser("publish-snapshot", help="Publish the current snapshot into a results branch")
     publish.add_argument("--repo", default=".")
