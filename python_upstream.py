@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 
-DISCOVERY_LIMIT = 100 # HACK: Temporary for faster iterations
+DISCOVERY_LIMIT = 5_000 # HACK: Temporary for faster iterations
 
 DISCOVER_CODE = """\
 import sys,unittest
