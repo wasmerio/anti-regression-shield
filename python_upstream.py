@@ -3,8 +3,6 @@ import os
 from pathlib import Path
 import subprocess
 
-DISCOVERY_LIMIT = 5_000 # HACK: Temporary for faster iterations
-
 DISCOVER_CODE = """\
 import sys,unittest
 job = sys.argv[1]
@@ -181,18 +179,10 @@ def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int) -
     workers = min(workers, len(jobs_list))
 
     discovered: dict[str, list[str]] = {}
-    discovered_total = 0
     for job in jobs_list:
         job, names = discover_job(job, wasmer_bin, host_test_dir, guest_dir, max(timeout, 2))
-        remaining = DISCOVERY_LIMIT - discovered_total
-        if remaining <= 0:
-            break
-        selected = names[:remaining]
-        if selected:
-            discovered[job] = selected
-            discovered_total += len(selected)
-        if discovered_total >= DISCOVERY_LIMIT:
-            break
+        if names:
+            discovered[job] = names
 
     status: dict[str, str] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
