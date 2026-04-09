@@ -21,17 +21,6 @@ DEFAULT_TIMEOUT = 600
 RETEST_TIMEOUT = 300
 RETEST_RUNS = 3
 RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT", "FLAKY")
-REGRESSION_TRANSITIONS = {
-    ("PASS", "FAIL"),
-    ("PASS", "TIMEOUT"),
-    ("FAIL", "TIMEOUT"),
-    ("SKIP", "FAIL"),
-}
-IMPROVEMENT_TRANSITIONS = {
-    ("FAIL", "PASS"),
-    ("TIMEOUT", "PASS"),
-    ("TIMEOUT", "FAIL"),
-}
 OK_RE = re.compile(r"^OK\b", re.MULTILINE)
 FAILED_RE = re.compile(r"^FAILED \((.+)\)", re.MULTILINE)
 
@@ -487,9 +476,11 @@ def run_python_suite(args: argparse.Namespace) -> int:
 
 
 def compare_statuses(baseline: dict[str, str], candidate: dict[str, str]) -> dict:
+    baseline_counts = counts_from_status(baseline)
+    candidate_counts = counts_from_status(candidate)
     all_tests = sorted(set(baseline) | set(candidate))
-    regressions: list[dict[str, str]] = []
-    improvements: list[dict[str, str]] = []
+    pass_losses: list[dict[str, str]] = []
+    pass_gains: list[dict[str, str]] = []
     changed: list[dict[str, str]] = []
     added: list[dict[str, str]] = []
     removed: list[dict[str, str]] = []
@@ -507,14 +498,21 @@ def compare_statuses(baseline: dict[str, str], candidate: dict[str, str]) -> dic
             continue
         row = {"test": test, "from": old, "to": new}
         changed.append(row)
-        if (old, new) in REGRESSION_TRANSITIONS:
-            regressions.append(row)
-        if (old, new) in IMPROVEMENT_TRANSITIONS:
-            improvements.append(row)
+        if old == "PASS" and new != "PASS":
+            pass_losses.append(row)
+        if old != "PASS" and new == "PASS":
+            pass_gains.append(row)
+
+    regressions: list[dict[str, str]] = []
+    improvements: list[dict[str, str]] = []
+    if candidate_counts["PASS"] < baseline_counts["PASS"]:
+        regressions = pass_losses
+    elif candidate_counts["PASS"] > baseline_counts["PASS"]:
+        improvements = pass_gains
 
     return {
-        "baseline_counts": counts_from_status(baseline),
-        "candidate_counts": counts_from_status(candidate),
+        "baseline_counts": baseline_counts,
+        "candidate_counts": candidate_counts,
         "changed": changed,
         "regressions": regressions,
         "improvements": improvements,
@@ -535,12 +533,12 @@ def compare_command(args: argparse.Namespace) -> int:
 
 
 def result_label(result: dict) -> str:
-    if result["regressions"]:
+    baseline_pass = result.get("baseline_counts", {}).get("PASS", 0)
+    candidate_pass = result.get("candidate_counts", {}).get("PASS", 0)
+    if candidate_pass < baseline_pass:
         return "REGRESSION"
-    if result["improvements"]:
+    if candidate_pass > baseline_pass:
         return "IMPROVEMENT"
-    if result.get("added") or result.get("removed") or result.get("changed"):
-        return "CHANGED"
     return "NO_CHANGE"
 
 
@@ -654,7 +652,7 @@ def make_regression_issue_title(candidate_meta: dict[str, Any], language: str = 
 
 def create_regression_issue(args: argparse.Namespace) -> int:
     comparison = load_json(Path(args.comparison))
-    if not comparison.get("regressions"):
+    if result_label(comparison) != "REGRESSION":
         print("No regressions detected; skipping issue creation.", flush=True)
         return 0
 
