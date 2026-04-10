@@ -11,13 +11,17 @@ import re
 import shutil
 import subprocess
 import tarfile
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from python_upstream import run_python_debug, run_python_upstream
+from python_upstream import append_log, run_python_debug, run_python_upstream
 
-DEFAULT_CPYTHON_VERSION = "v3.13.0"
+# TODO: We should probably take it automatically from the package via:
+#       wasmer run --net python/python -- -c 'import sys; print(sys.version)'
+DEFAULT_CPYTHON_COMMIT = "e3245fc95e"
 DEFAULT_TIMEOUT = 600
+DEFAULT_LOG_FILE = "test.log"
 RETEST_TIMEOUT = 300
 RETEST_RUNS = 3
 RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT", "FLAKY")
@@ -249,13 +253,15 @@ def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None
     return wasmer_bin, commit
 
 
-def ensure_cpython_checkout(version: str, work_dir: Path) -> Path:
+def ensure_cpython_checkout(work_dir: Path) -> Path:
     cache_root = work_dir / "cpython"
-    safe = "".join(ch for ch in version.replace("/", "_").replace(":", "_").replace("@", "_") if ch.isalnum() or ch in "._-")
+    safe = DEFAULT_CPYTHON_COMMIT
     checkout = cache_root / safe
     cache_root.mkdir(parents=True, exist_ok=True)
     if not (checkout / ".git").exists():
-        run(["git", "clone", "--depth", "1", "--branch", version, "https://github.com/python/cpython.git", str(checkout)])
+        run(["git", "clone", "--depth", "1", "https://github.com/python/cpython.git", str(checkout)])
+    run(["git", "fetch", "--depth", "1", "origin", DEFAULT_CPYTHON_COMMIT], cwd=checkout)
+    run(["git", "checkout", "-B", "compat-tests-cpython", "FETCH_HEAD"], cwd=checkout)
     return checkout
 
 
@@ -309,6 +315,8 @@ def classify_changed_test(
     test_name: str,
     old_status: str,
     new_status: str,
+    log_path: Path | None,
+    log_lock: threading.Lock | None,
 ) -> tuple[str, str, bool]:
     def rerun_once() -> str:
         try:
@@ -318,8 +326,12 @@ def classify_changed_test(
                 test_name=test_name,
                 timeout=RETEST_TIMEOUT,
             )
+            append_log(log_path, log_lock, f"rerun {test_name}", proc.stdout or "", proc.stderr or "")
             return parse_debug_unittest_status((proc.stdout or "") + (proc.stderr or ""), proc.returncode)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout) or ""
+            stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr) or ""
+            append_log(log_path, log_lock, f"rerun {test_name} TIMEOUT", stdout, stderr)
             return "TIMEOUT"
 
     if new_status != "PASS":
@@ -340,6 +352,7 @@ def stabilize_changed_tests(
     candidate_status: dict[str, str],
     wasmer_bin: Path,
     host_test_dir: Path,
+    log_path: Path | None,
 ) -> tuple[dict[str, str], int]:
     changed = [
         test
@@ -357,6 +370,7 @@ def stabilize_changed_tests(
 
     effective = dict(candidate_status)
     flaky_count = 0
+    log_lock = threading.Lock() if log_path is not None else None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count(len(changed))) as pool:
         futures = {
@@ -367,6 +381,8 @@ def stabilize_changed_tests(
                 test_name=test_name,
                 old_status=baseline_status[test_name],
                 new_status=candidate_status[test_name],
+                log_path=log_path,
+                log_lock=log_lock,
             ): test_name
             for test_name in changed
         }
@@ -389,9 +405,10 @@ def run_python_suite(args: argparse.Namespace) -> int:
     work_dir = output_dir / ".work"
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    cpython_checkout = ensure_cpython_checkout(args.cpython_version, work_dir)
+    cpython_checkout = ensure_cpython_checkout(work_dir)
     host_test_dir = cpython_checkout / "Lib" / "test"
     patch_faulthandler_workarounds(host_test_dir)
+    log_path = output_dir / DEFAULT_LOG_FILE
 
     wasmer_checkout: Path | None = None
     prebuilt = None
@@ -429,6 +446,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
         print(proc.stderr, end="")
         return 0 if proc.returncode == 0 else proc.returncode
     else:
+        write_text(log_path, "")
         prev_cwd = Path.cwd()
         os.chdir(output_dir)
         try:
@@ -436,6 +454,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
                 wasmer_bin=str(wasmer_bin),
                 host_test_dir=host_test_dir,
                 timeout=args.timeout,
+                log_path=log_path,
             )
         finally:
             os.chdir(prev_cwd)
@@ -448,6 +467,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
         candidate_status=status,
         wasmer_bin=Path(wasmer_bin),
         host_test_dir=host_test_dir,
+        log_path=log_path,
     )
 
     write_json(output_dir / "status.json", status)
@@ -458,7 +478,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
             "commit": wasmer_commit,
         },
         "python": {
-            "cpython_version": args.cpython_version,
+            "cpython_commit": DEFAULT_CPYTHON_COMMIT,
         },
         "config": {
             "timeout_seconds": args.timeout,
@@ -635,6 +655,7 @@ def prepare_pr_comment(args: argparse.Namespace) -> int:
             f"- compat-tests workflow: {args.run_url}\n"
             f"- compat-tests results commit: https://github.com/{args.results_repo}/commit/{args.results_commit}\n"
             f"- compat-tests branch: https://github.com/{args.results_repo}/tree/{candidate_meta['wasmer']['branch']}\n"
+            f"- full test log: {args.log_artifact_url}\n"
         )
 
     if args.output:
@@ -799,7 +820,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_python.add_argument("--wasmer-ref", default="main")
     run_python.add_argument("--wasmer-bin")
     run_python.add_argument("--wasmer-checkout")
-    run_python.add_argument("--cpython-version", default=DEFAULT_CPYTHON_VERSION)
     run_python.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     run_python.add_argument("--compare-ref", default="origin/main")
     run_python.add_argument("--debug-test")
@@ -827,6 +847,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr_comment.add_argument("--results-repo", required=True)
     pr_comment.add_argument("--results-commit", required=True)
     pr_comment.add_argument("--run-url", required=True)
+    pr_comment.add_argument("--log-artifact-url", required=True)
     pr_comment.add_argument("--expected-wasmer-sha")
     pr_comment.add_argument("--output")
     pr_comment.set_defaults(func=prepare_pr_comment)

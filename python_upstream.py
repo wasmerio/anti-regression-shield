@@ -1,7 +1,9 @@
 import concurrent.futures
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import subprocess
+import threading
 
 DISCOVER_CODE = """\
 import sys,unittest
@@ -52,11 +54,24 @@ class Result(unittest.TextTestResult):
     def addSkip(self, test, reason): super().addSkip(test, reason); self._mark("SKIP", test)
     def addExpectedFailure(self, test, err): super().addExpectedFailure(test, err); self._mark("FAIL", test)
     def addUnexpectedSuccess(self, test): super().addUnexpectedSuccess(test); self._mark("FAIL", test)
-stream = open(os.devnull, "w")
-result = unittest.TextTestRunner(stream=stream, verbosity=0, resultclass=Result).run(suite)
-stream.close()
+result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=Result).run(suite)
 raise SystemExit(0 if result.wasSuccessful() else 1)
 """
+
+
+def append_log(log_path: Path | None, log_lock: threading.Lock | None, header: str, stdout: str, stderr: str) -> None:
+    if log_path is None or log_lock is None:
+        return
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    parts = [f"===== [{timestamp}] {header} =====\n"]
+    if stdout:
+        parts.extend(["[stdout]\n", stdout if stdout.endswith("\n") else stdout + "\n"])
+    if stderr:
+        parts.extend(["[stderr]\n", stderr if stderr.endswith("\n") else stderr + "\n"])
+    parts.append("\n")
+    with log_lock:
+        with log_path.open("a") as f:
+            f.write("".join(parts))
 
 
 def guest_test_dir(wasmer_bin: str) -> str:
@@ -111,7 +126,7 @@ def discover_job(job: str, wasmer_bin: str, host_test_dir: Path, guest_test_dir:
     return job, names
 
 
-def run_job(job: str, expected: list[str], wasmer_bin: str, host_test_dir: Path, guest_test_dir: str, timeout: int) -> tuple[str, list[str], list[str], list[str], list[str]]:
+def run_job(job: str, expected: list[str], wasmer_bin: str, host_test_dir: Path, guest_test_dir: str, timeout: int) -> tuple[str, list[str], list[str], list[str], list[str], str, str]:
     cmd = [
         wasmer_bin,
         "run",
@@ -128,8 +143,10 @@ def run_job(job: str, expected: list[str], wasmer_bin: str, host_test_dir: Path,
     try:
         proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
         output = proc.stdout
+        stderr = proc.stderr or ""
     except subprocess.TimeoutExpired as exc:
         output = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout) or ""
+        stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr) or ""
         proc = None
         timed_out = True
     passed, failed, skipped = set(), set(), set()
@@ -145,12 +162,12 @@ def run_job(job: str, expected: list[str], wasmer_bin: str, host_test_dir: Path,
         timed_out_names = known - passed - failed - skipped
         if not known:
             timed_out_names = {job}
-        return job, sorted(passed), sorted(failed), sorted(skipped), sorted(timed_out_names)
+        return job, sorted(passed), sorted(failed), sorted(skipped), sorted(timed_out_names), output, stderr
     if not known and proc and proc.returncode:
         failed.add(job)
     else:
         failed.update(name for name in known if name not in passed and name not in failed and name not in skipped)
-    return job, sorted(passed), sorted(failed), sorted(skipped), []
+    return job, sorted(passed), sorted(failed), sorted(skipped), [], output, stderr
 
 
 def run_python_debug(*, wasmer_bin: str, host_test_dir: Path, test_name: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
@@ -172,7 +189,7 @@ def run_python_debug(*, wasmer_bin: str, host_test_dir: Path, test_name: str, ti
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
 
 
-def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int) -> dict[str, str]:
+def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int, log_path: Path | None = None) -> dict[str, str]:
     guest_dir = guest_test_dir(wasmer_bin)
     jobs_list = find_jobs(host_test_dir)
     workers = (getattr(os, "process_cpu_count", os.cpu_count)() or 1) + 2
@@ -199,13 +216,21 @@ def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int) -
 
     status: dict[str, str] = {}
     completed_cases = 0
+    log_lock = threading.Lock() if log_path is not None else None
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(run_job, job, discovered[job], wasmer_bin, host_test_dir, guest_dir, max(timeout, 2)): job
             for job in discovered
         }
         for future in concurrent.futures.as_completed(futures):
-            _, job_pass, job_fail, job_skip, job_timeout = future.result()
+            job_name, job_pass, job_fail, job_skip, job_timeout, stdout, stderr = future.result()
+            append_log(
+                log_path,
+                log_lock,
+                f"module {job_name}{' TIMEOUT' if job_timeout else ''}",
+                stdout,
+                stderr,
+            )
             for name in job_pass:
                 completed_cases += 1
                 print(f"[{completed_cases}/{total_cases}] {name} PASS", flush=True)

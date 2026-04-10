@@ -13,10 +13,6 @@ on:
         description: "Git ref to compare against when publishing"
         required: false
         default: "origin/main"
-      cpython_version:
-        description: "CPython version/tag"
-        required: false
-        default: "v3.13.0"
       timeout:
         description: "Job timeout in seconds"
         required: false
@@ -45,7 +41,6 @@ jobs:
     env:
       WASMER_REF: ${{ github.event.inputs.wasmer_ref || 'main' }}
       COMPARE_REF: ${{ github.event.inputs.compare_ref || 'origin/main' }}
-      CPYTHON_VERSION: ${{ github.event.inputs.cpython_version || 'v3.13.0' }}
       TEST_TIMEOUT: ${{ github.event.inputs.timeout || '600' }}
       COMMENT_REPO: ${{ github.event.inputs.comment_repo || '' }}
       COMMENT_PR_NUMBER: ${{ github.event.inputs.comment_pr_number || '' }}
@@ -81,9 +76,16 @@ jobs:
         run: |
           python3 main.py run-python \
             --wasmer-ref "${WASMER_REF}" \
-            --cpython-version "${CPYTHON_VERSION}" \
             --timeout "${TEST_TIMEOUT}" \
             --compare-ref "${COMPARE_REF}"
+
+      - name: Upload full test log
+        id: upload-log
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-upstream-log
+          path: test.log
+          if-no-files-found: error
 
       - name: Publish snapshot
         id: publish
@@ -125,6 +127,7 @@ jobs:
             --results-repo "${{ github.repository }}" \
             --results-commit "${{ steps.publish.outputs.commit }}" \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --log-artifact-url "${{ steps.upload-log.outputs.artifact-url }}" \
             --expected-wasmer-sha "${EXPECTED_WASMER_SHA}" \
             --output .git/compat-tests-pr-comment.txt
           gh pr comment "${COMMENT_PR_NUMBER}" \
