@@ -300,6 +300,13 @@ def patch_faulthandler_workarounds(testdir: Path) -> None:
             ),
             ("        for signum in signals:\n\n", "        for signum in signals:\n            pass\n"),
         ],
+        # HACK: CPython hardcodes errno 9 in test_interpreters cleanup.
+        # WASI requires EBADF to be 8, so keep this rewrite until
+        # https://github.com/python/cpython/pull/148345 lands upstream.
+        testdir / "test_interpreters" / "utils.py": [
+            ("import contextlib\n", "import contextlib\nimport errno\n"),
+            ("        if exc.errno != 9:\n", "        if exc.errno != errno.EBADF:\n"),
+        ],
     }
     for path, edits in replacements.items():
         text = path.read_text()
