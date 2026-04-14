@@ -193,7 +193,7 @@ def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None
             "--limit",
             "10",
             "--json",
-            "databaseId,headSha,conclusion,status",
+            "databaseId,headSha,conclusion,status,event",
         ],
         text=True,
         capture_output=True,
@@ -204,9 +204,18 @@ def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None
             print(proc.stderr, end="", flush=True)
         return None
     runs = json.loads(proc.stdout or "[]")
-    run = next((row for row in runs if row.get("status") == "completed" and row.get("conclusion") == "success"), None)
+    run = next(
+        (
+            row
+            for row in runs
+            if row.get("status") == "completed"
+            and row.get("conclusion") == "success"
+            and row.get("event") == "push"
+        ),
+        None,
+    )
     if not run:
-        print("Prebuilt Wasmer main artifact unavailable: no successful main build run found", flush=True)
+        print("Prebuilt Wasmer main artifact unavailable: no successful main push build run found", flush=True)
         return None
 
     commit = run["headSha"]
