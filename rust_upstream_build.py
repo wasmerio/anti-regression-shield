@@ -1803,7 +1803,68 @@ def run_rust_tests(build_results: list[BuildResult], args: argparse.Namespace, b
     )
     print(f"Run report: {args.run_report}", flush=True)
     print(f"Run log: {args.run_log}", flush=True)
+    export_rust_baseline(args, build_report)
     return summary
+
+
+RUST_RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT", "FLAKY")
+
+
+def rust_case_key(case: dict[str, Any]) -> str:
+    stem = Path(case["artifact_path"]).stem
+    return f"{case['workspace']}::{case['package']}::{stem}::{case['test_name']}"
+
+
+def rust_counts_from_status(status: dict[str, str]) -> dict[str, int]:
+    counts = {name: 0 for name in RUST_RESULT_STATUSES}
+    for value in status.values():
+        if value in counts:
+            counts[value] += 1
+    return counts
+
+
+def export_rust_baseline(args: argparse.Namespace, build_report: dict[str, Any] | None) -> None:
+    if args.write_baseline_dir is None:
+        return
+    out_dir = Path(args.write_baseline_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = Path(args.run_report).resolve()
+    report = json.loads(report_path.read_text())
+    cases = report.get("cases", [])
+    status: dict[str, str] = {}
+    for case in cases:
+        key = rust_case_key(case)
+        status[key] = case["status"]
+    summary = report.get("summary", {})
+    metadata: dict[str, Any] = {
+        "wasmer": {
+            "ref": args.baseline_wasmer_ref,
+            "branch": args.baseline_wasmer_branch,
+            "commit": args.baseline_wasmer_commit,
+        },
+        "rust": {
+            "rust_ref": report.get("rust_ref") or args.rust_ref,
+            "rust_head": report.get("rust_head"),
+            "rust_repo": report.get("rust_repo"),
+            "build_report": str(Path(args.report).resolve()),
+            "run_report": str(report_path),
+            "target": report.get("target") or args.target,
+        },
+        "counts": rust_counts_from_status(status),
+        "run": {"generated_at": report.get("generated_at")},
+        "harness": {
+            "discovered_binaries": report.get("discovered_binaries"),
+            "discovered_tests": report.get("discovered_tests"),
+            "precompile_summary": report.get("precompile_summary"),
+            "run_summary": summary,
+        },
+    }
+    if build_report:
+        metadata["rust"]["build_generated_at"] = build_report.get("generated_at")
+
+    write_json(out_dir / "rust-status.json", dict(sorted(status.items())))
+    write_json(out_dir / "rust-metadata.json", metadata)
+    print(f"Rust baseline: {out_dir / 'rust-status.json'} ({len(status)} cases)", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -1912,6 +1973,14 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Extra argument passed to `wasmer compile` after compiler flags (e.g. `--compiler-threads=4`).",
     )
+    parser.add_argument(
+        "--write-baseline-dir",
+        type=Path,
+        help="After a full Wasmer test run, write rust-status.json and rust-metadata.json (for regression baselines).",
+    )
+    parser.add_argument("--baseline-wasmer-ref", default="local", help="Stored in rust-metadata.json under wasmer.ref.")
+    parser.add_argument("--baseline-wasmer-branch", default="local", help="Stored in rust-metadata.json under wasmer.branch.")
+    parser.add_argument("--baseline-wasmer-commit", default="local", help="Stored in rust-metadata.json under wasmer.commit.")
     return parser.parse_args()
 
 
@@ -1929,6 +1998,8 @@ def main() -> int:
         args.wasix_sysroot = args.wasix_sysroot.resolve()
     args.wasix_sysroot_link = Path.absolute(args.wasix_sysroot_link)
     args.compile_dir = args.compile_dir.resolve()
+    if args.write_baseline_dir is not None:
+        args.write_baseline_dir = args.write_baseline_dir.resolve()
     if args.compile_wasmer_only and not args.run_only and not args.run_tests:
         print("error: --compile-wasmer-only requires --run-only or --run-tests", file=sys.stderr)
         return 2

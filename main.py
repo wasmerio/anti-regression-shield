@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import sys
 from pathlib import Path
 import platform
 import re
@@ -512,6 +513,68 @@ def run_python_suite(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_rust_upstream_suite(args: argparse.Namespace) -> int:
+    """Drive rust_upstream_build.py --run-only and emit rust-status.json for regression baselines (Python-style)."""
+    started_at = now_utc()
+    output_dir = Path.cwd().resolve()
+    wasmer_bin = Path(args.wasmer_bin).resolve()
+    if not wasmer_bin.exists():
+        raise SystemExit(f"Wasmer binary not found: {wasmer_bin}")
+    wasmer_ref, wasmer_branch, wasmer_commit = resolve_local_wasmer_identity(args, wasmer_bin)
+    build_report = Path(args.rust_build_report).resolve()
+    if not build_report.exists():
+        raise SystemExit(
+            f"Rust build report not found: {build_report}\n"
+            "Run `python3 rust_upstream_build.py` first to produce build-report.json, or pass --rust-build-report."
+        )
+    rust_script = Path(__file__).resolve().parent / "rust_upstream_build.py"
+    cmd = [
+        sys.executable,
+        str(rust_script),
+        "--run-only",
+        "--wasmer-bin",
+        str(wasmer_bin),
+        "--report",
+        str(build_report),
+        "--run-report",
+        str(Path(args.rust_run_report).resolve()),
+        "--run-log",
+        str(Path(args.rust_run_log).resolve()),
+        "--write-baseline-dir",
+        str(output_dir),
+        "--baseline-wasmer-ref",
+        wasmer_ref,
+        "--baseline-wasmer-branch",
+        wasmer_branch,
+        "--baseline-wasmer-commit",
+        wasmer_commit,
+    ]
+    if args.rust_run_workers is not None:
+        cmd.extend(["--run-workers", str(args.rust_run_workers)])
+    if args.rust_skip_precompile:
+        cmd.append("--skip-precompile")
+    print("+ " + " ".join(cmd), flush=True)
+    proc = subprocess.run(cmd)
+    if proc.returncode != 0:
+        return proc.returncode
+    status_path = output_dir / "rust-status.json"
+    status = load_json(status_path)
+    if not status:
+        raise SystemExit(f"Missing or empty {status_path} after rust upstream run")
+    meta = load_json(output_dir / "rust-metadata.json")
+    meta.setdefault("run", {})["started_at"] = started_at
+    meta["run"]["finished_at"] = now_utc()
+    write_json(output_dir / "rust-metadata.json", meta)
+    c = meta.get("counts", {})
+    print(
+        f"Wrote rust baseline: PASS {c.get('PASS', 0)} / FAIL {c.get('FAIL', 0)} / "
+        f"TIMEOUT {c.get('TIMEOUT', 0)} / SKIP {c.get('SKIP', 0)} / FLAKY {c.get('FLAKY', 0)} "
+        f"({len(status)} test keys)",
+        flush=True,
+    )
+    return 0
+
+
 def compare_statuses(baseline: dict[str, str], candidate: dict[str, str]) -> dict:
     baseline_counts = counts_from_status(baseline)
     candidate_counts = counts_from_status(candidate)
@@ -779,43 +842,95 @@ def publish_snapshot(args: argparse.Namespace) -> int:
 
     status = load_json(source_dir / "status.json")
     metadata = load_json(source_dir / "metadata.json")
-    if not status or not metadata:
-        raise SystemExit(f"Missing status.json or metadata.json in {source_dir}")
+    rust_status = load_json(source_dir / "rust-status.json")
+    rust_metadata = load_json(source_dir / "rust-metadata.json")
+    if (not status or not metadata) and (not rust_status or not rust_metadata):
+        raise SystemExit(
+            f"Missing status.json/metadata.json and missing rust-status.json/rust-metadata.json in {source_dir}"
+        )
 
     run(["git", "fetch", "--all", "--tags"], cwd=repo)
     ensure_branch_checked_out(repo, branch)
 
-    compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
-    compare_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
-    comparison = compare_statuses(compare_status, status)
-    if not compare_meta:
-        compare_meta = {
-            "wasmer": {
-                "branch": compare_ref or "none",
-                "commit": "0000000",
-            },
-            "counts": counts_from_status(compare_status),
-        }
-    write_json(repo / ".git" / "compat-tests-baseline-metadata.json", compare_meta)
-    write_json(repo / ".git" / "compat-tests-comparison.json", comparison)
+    comparison: dict[str, Any] = {}
+    compare_meta: dict[str, Any] = {}
+    if status and metadata:
+        compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
+        compare_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
+        comparison = compare_statuses(compare_status, status)
+        if not compare_meta:
+            compare_meta = {
+                "wasmer": {
+                    "branch": compare_ref or "none",
+                    "commit": "0000000",
+                },
+                "counts": counts_from_status(compare_status),
+            }
+        write_json(repo / ".git" / "compat-tests-baseline-metadata.json", compare_meta)
+        write_json(repo / ".git" / "compat-tests-comparison.json", comparison)
+
+    rust_comparison: dict[str, Any] = {}
+    if rust_status and rust_metadata:
+        compare_rust = git_file_json(repo, compare_ref, "rust-status.json") if compare_ref else {}
+        compare_rust_meta = git_file_json(repo, compare_ref, "rust-metadata.json") if compare_ref else {}
+        rust_comparison = compare_statuses(compare_rust, rust_status)
+        if not compare_rust_meta:
+            compare_rust_meta = {
+                "wasmer": {
+                    "branch": compare_ref or "none",
+                    "commit": "0000000",
+                },
+                "counts": counts_from_status(compare_rust),
+            }
+        write_json(repo / ".git" / "compat-tests-rust-baseline-metadata.json", compare_rust_meta)
+        write_json(repo / ".git" / "compat-tests-rust-comparison.json", rust_comparison)
 
     branch_status = git_file_json(repo, "HEAD", "status.json")
     branch_metadata = git_file_json(repo, "HEAD", "metadata.json")
-    same_identity = (
-        branch_metadata.get("wasmer", {}) == metadata.get("wasmer", {})
-        and branch_metadata.get("python", {}) == metadata.get("python", {})
-        and branch_metadata.get("config", {}) == metadata.get("config", {})
-    )
-    if branch_status == status and same_identity:
+    branch_rust_status = git_file_json(repo, "HEAD", "rust-status.json")
+    branch_rust_metadata = git_file_json(repo, "HEAD", "rust-metadata.json")
+
+    same_identity_python = True
+    if status and metadata:
+        same_identity_python = (
+            branch_metadata.get("wasmer", {}) == metadata.get("wasmer", {})
+            and branch_metadata.get("python", {}) == metadata.get("python", {})
+            and branch_metadata.get("config", {}) == metadata.get("config", {})
+        )
+    same_identity_rust = True
+    if rust_status and rust_metadata:
+        same_identity_rust = branch_rust_metadata.get("wasmer", {}) == rust_metadata.get("wasmer", {}) and branch_rust_metadata.get(
+            "rust", {}
+        ) == rust_metadata.get("rust", {})
+
+    same_snapshot_python = (not status) or (branch_status == status)
+    same_snapshot_rust = (not rust_status) or (branch_rust_status == rust_status)
+
+    if same_snapshot_python and same_snapshot_rust and same_identity_python and same_identity_rust:
         print("No snapshot changes to publish.", flush=True)
         print(git_head_commit(repo), flush=True)
         return 0
 
-    summary_text = render_summary_text(comparison, compare_meta, metadata, language="Python")
-    write_json(repo / "status.json", status)
-    write_json(repo / "metadata.json", metadata)
+    summary_parts: list[str] = []
+    if status and metadata and comparison:
+        summary_parts.append(render_summary_text(comparison, compare_meta, metadata, language="Python"))
+    if rust_status and rust_metadata and rust_comparison:
+        summary_parts.append(render_summary_text(rust_comparison, compare_rust_meta, rust_metadata, language="Rust"))
+    summary_text = "\n\n---\n\n".join(summary_parts)
 
-    run(["git", "add", "status.json", "metadata.json"], cwd=repo)
+    if status and metadata:
+        write_json(repo / "status.json", status)
+        write_json(repo / "metadata.json", metadata)
+    if rust_status and rust_metadata:
+        write_json(repo / "rust-status.json", rust_status)
+        write_json(repo / "rust-metadata.json", rust_metadata)
+
+    add_paths = []
+    if status and metadata:
+        add_paths.extend(["status.json", "metadata.json"])
+    if rust_status and rust_metadata:
+        add_paths.extend(["rust-status.json", "rust-metadata.json"])
+    run(["git", "add", *add_paths], cwd=repo)
 
     maybe_setup_gh_git_auth(repo)
     ensure_git_identity(repo, args.git_user_name, args.git_user_email)
@@ -841,6 +956,40 @@ def build_parser() -> argparse.ArgumentParser:
     run_python.add_argument("--compare-ref", default="origin/main")
     run_python.add_argument("--debug-test")
     run_python.set_defaults(func=run_python_suite)
+
+    run_rust = sub.add_parser(
+        "run-rust-upstream",
+        help="Run Wasmer against existing Rust wasm test binaries and write rust-status.json / rust-metadata.json baselines",
+    )
+    run_rust.add_argument("--wasmer-bin", required=True, help="Path to the wasmer CLI used for compile + run.")
+    run_rust.add_argument("--wasmer-checkout", help="Optional Wasmer git checkout (for metadata commit SHA).")
+    run_rust.add_argument(
+        "--rust-build-report",
+        default=".work/rust-upstream/build-report.json",
+        help="build-report.json from a prior rust_upstream_build.py run (cargo test --no-run).",
+    )
+    run_rust.add_argument(
+        "--rust-run-report",
+        default=".work/rust-upstream/run-report.json",
+        help="Destination JSON for the full per-case Wasmer run (large).",
+    )
+    run_rust.add_argument(
+        "--rust-run-log",
+        default=".work/rust-upstream/run.log",
+        help="Destination log for Wasmer stdout/stderr tails.",
+    )
+    run_rust.add_argument(
+        "--rust-run-workers",
+        type=int,
+        default=None,
+        help="Forward to rust_upstream_build.py --run-workers.",
+    )
+    run_rust.add_argument(
+        "--rust-skip-precompile",
+        action="store_true",
+        help="Forward to rust_upstream_build.py --skip-precompile (faster cold start, more compile work inside run).",
+    )
+    run_rust.set_defaults(func=run_rust_upstream_suite)
 
     compare = sub.add_parser("compare-status", help="Compare two status.json snapshots")
     compare.add_argument("--baseline", required=True)
