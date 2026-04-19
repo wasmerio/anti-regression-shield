@@ -15,6 +15,20 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from node_upstream import (
+    DEFAULT_EDGEJS_NODE_VERSION,
+    DEFAULT_EDGEJS_PACKAGE,
+    DEFAULT_NODE_UPSTREAM_REF,
+    DEFAULT_NODE_UPSTREAM_REPO,
+    collect_test_files,
+    count_tests_by_suite,
+    ensure_node_upstream_checkout,
+    node_repo_test_dir,
+    parse_node_single_file_status,
+    run_node_debug,
+    run_node_upstream,
+    write_wasmer_node_wrapper,
+)
 from python_upstream import append_log, run_python_debug, run_python_upstream
 
 # TODO: We should probably take it automatically from the package via:
@@ -512,6 +526,267 @@ def run_python_suite(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_node_debug_proc(proc: subprocess.CompletedProcess[str], timed_out: bool = False) -> str:
+    return parse_node_single_file_status(
+        stdout=proc.stdout or "",
+        stderr=proc.stderr or "",
+        exit_code=proc.returncode,
+        timed_out=timed_out,
+    )
+
+
+def classify_changed_node_test(
+    *,
+    repo_root: Path,
+    wrapper: Path,
+    test_name: str,
+    old_status: str,
+    new_status: str,
+    test_py_timeout: int,
+    log_path: Path | None,
+    log_lock: threading.Lock | None,
+) -> tuple[str, str, bool]:
+    def rerun_once() -> str:
+        try:
+            proc = run_node_debug(
+                repo_root=repo_root,
+                wrapper=wrapper,
+                rel_test=test_name,
+                timeout=RETEST_TIMEOUT,
+                test_py_timeout=test_py_timeout,
+            )
+            append_log(log_path, log_lock, f"rerun {test_name}", proc.stdout or "", proc.stderr or "")
+            return parse_node_debug_proc(proc, False)
+        except subprocess.TimeoutExpired as exc:
+            stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout) or ""
+            stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr) or ""
+            append_log(log_path, log_lock, f"rerun {test_name} TIMEOUT", stdout, stderr)
+            return "TIMEOUT"
+
+    if new_status != "PASS":
+        outcome = rerun_once()
+        if outcome == new_status:
+            return test_name, new_status, False
+        return test_name, old_status, True
+
+    for _ in range(RETEST_RUNS):
+        if rerun_once() != "PASS":
+            return test_name, old_status, True
+    return test_name, "PASS", False
+
+
+def stabilize_node_changed_tests(
+    *,
+    baseline_status: dict[str, str],
+    candidate_status: dict[str, str],
+    repo_root: Path,
+    wrapper: Path,
+    test_py_timeout: int,
+    log_path: Path | None,
+) -> tuple[dict[str, str], int]:
+    changed = [
+        test
+        for test in sorted(set(baseline_status) & set(candidate_status))
+        if baseline_status[test] != candidate_status[test]
+    ]
+    if not changed:
+        return candidate_status, 0
+
+    print(
+        f"Re-running {len(changed)} changed node tests with {worker_count(len(changed))} workers "
+        f"({RETEST_RUNS} runs each, {RETEST_TIMEOUT}s timeout)...",
+        flush=True,
+    )
+
+    effective = dict(candidate_status)
+    flaky_count = 0
+    log_lock = threading.Lock() if log_path is not None else None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count(len(changed))) as pool:
+        futures = {
+            pool.submit(
+                classify_changed_node_test,
+                repo_root=repo_root,
+                wrapper=wrapper,
+                test_name=test_name,
+                old_status=baseline_status[test_name],
+                new_status=candidate_status[test_name],
+                test_py_timeout=test_py_timeout,
+                log_path=log_path,
+                log_lock=log_lock,
+            ): test_name
+            for test_name in changed
+        }
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            test_name, effective_status, flaky = future.result()
+            effective[test_name] = effective_status
+            if flaky:
+                flaky_count += 1
+            completed += 1
+            if completed % 10 == 0 or completed == len(changed):
+                print(f"Re-ran {completed}/{len(changed)} changed node tests", flush=True)
+
+    return dict(sorted(effective.items())), flaky_count
+
+
+def run_node_suite(args: argparse.Namespace) -> int:
+    started_at = now_utc()
+    output_dir = Path.cwd()
+    work_dir = output_dir / ".work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    node_ref = args.node_upstream_ref or DEFAULT_NODE_UPSTREAM_REF
+    repo_root = ensure_node_upstream_checkout(work_dir, node_ref)
+    wrapper = work_dir / "node_via_wasmer.sh"
+    log_path = output_dir / "test.log"
+
+    wasmer_checkout: Path | None = None
+    prebuilt = None
+    if args.wasmer_bin:
+        wasmer_bin = Path(args.wasmer_bin).resolve()
+        if not wasmer_bin.exists():
+            raise SystemExit(f"Wasmer binary not found: {wasmer_bin}")
+        print(f"Using local Wasmer binary at {wasmer_bin}", flush=True)
+        wasmer_ref, wasmer_branch, wasmer_commit = resolve_local_wasmer_identity(args, wasmer_bin)
+    else:
+        if not args.wasmer_checkout and args.wasmer_ref == "main":
+            prebuilt = try_download_prebuilt_main_wasmer(work_dir)
+        if prebuilt is not None:
+            wasmer_bin, wasmer_commit = prebuilt
+            wasmer_ref = args.wasmer_ref
+            wasmer_branch = args.wasmer_ref
+            print(f"Using prebuilt Wasmer main artifact at {wasmer_bin}", flush=True)
+        else:
+            wasmer_checkout = resolve_wasmer_checkout(args, work_dir)
+            print(f"Building Wasmer from source at {wasmer_checkout}", flush=True)
+            run(["cargo", "build", "-p", "wasmer-cli", "--features", "llvm", "--release"], cwd=wasmer_checkout)
+            wasmer_bin = wasmer_checkout / "target" / "release" / "wasmer"
+            wasmer_ref = args.wasmer_ref
+            wasmer_branch = args.wasmer_ref
+            wasmer_commit = git_head_commit(wasmer_checkout)
+
+    write_wasmer_node_wrapper(
+        path=wrapper,
+        wasmer_bin=wasmer_bin,
+        mount_root=repo_root,
+        edgejs_package=args.edgejs_package,
+    )
+
+    only_suites: frozenset[str] | None = None
+    if args.node_suites:
+        only_suites = frozenset(s.strip() for s in args.node_suites.split(",") if s.strip())
+
+    extra_exclude: frozenset[str] | None = None
+    if args.node_exclude_suites:
+        extra_exclude = frozenset(s.strip() for s in args.node_exclude_suites.split(",") if s.strip())
+
+    if args.debug_test:
+        proc = run_node_debug(
+            repo_root=repo_root,
+            wrapper=wrapper,
+            rel_test=args.debug_test,
+            timeout=args.timeout,
+            test_py_timeout=args.test_py_timeout,
+        )
+        print(proc.stdout, end="")
+        print(proc.stderr, end="")
+        return 0 if proc.returncode == 0 else proc.returncode
+
+    write_text(log_path, "")
+    status = run_node_upstream(
+        repo_root=repo_root,
+        wrapper=wrapper,
+        timeout=args.timeout,
+        test_py_timeout=args.test_py_timeout,
+        log_path=log_path,
+        only_suites=only_suites,
+        extra_exclude_suites=extra_exclude,
+        jobs_limit=args.node_jobs,
+        max_tests=args.node_max_tests,
+    )
+    if not status:
+        raise SystemExit("Node upstream run did not produce any test statuses")
+
+    baseline_status = git_file_json(output_dir, args.compare_ref, "status.json") if args.compare_ref else {}
+    status, flaky_count = stabilize_node_changed_tests(
+        baseline_status=baseline_status,
+        candidate_status=status,
+        repo_root=repo_root,
+        wrapper=wrapper,
+        test_py_timeout=args.test_py_timeout,
+        log_path=log_path,
+    )
+
+    write_json(output_dir / "status.json", status)
+    metadata = {
+        "wasmer": {
+            "ref": wasmer_ref,
+            "branch": wasmer_branch,
+            "commit": wasmer_commit,
+        },
+        "node": {
+            "upstream_repo": DEFAULT_NODE_UPSTREAM_REPO,
+            "upstream_ref": node_ref,
+            "upstream_commit": git_head_commit(repo_root),
+            "edgejs_compatible_version": DEFAULT_EDGEJS_NODE_VERSION,
+            "edgejs_package": args.edgejs_package,
+        },
+        "config": {
+            "timeout_seconds": args.timeout,
+            "debug_test": args.debug_test,
+            "test_py_timeout": args.test_py_timeout,
+            "node_upstream_ref": node_ref,
+            "node_suites": args.node_suites,
+            "node_exclude_suites": args.node_exclude_suites,
+            "node_jobs": args.node_jobs,
+            "node_max_tests": args.node_max_tests,
+        },
+        "run": {
+            "started_at": started_at,
+            "finished_at": now_utc(),
+        },
+        "counts": counts_from_status(status),
+    }
+    metadata["counts"]["FLAKY"] = flaky_count
+    write_json(output_dir / "metadata.json", metadata)
+    return 0
+
+
+def list_node_tests(args: argparse.Namespace) -> int:
+    output_dir = Path.cwd()
+    work_dir = output_dir / ".work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    node_ref = args.node_upstream_ref or DEFAULT_NODE_UPSTREAM_REF
+    repo_root = ensure_node_upstream_checkout(work_dir, node_ref)
+    test_dir = node_repo_test_dir(repo_root)
+    only_suites: frozenset[str] | None = None
+    if args.node_suites:
+        only_suites = frozenset(s.strip() for s in args.node_suites.split(",") if s.strip())
+    extra_exclude: frozenset[str] | None = None
+    if args.node_exclude_suites:
+        extra_exclude = frozenset(s.strip() for s in args.node_exclude_suites.split(",") if s.strip())
+    files = collect_test_files(
+        test_dir,
+        only_suites=only_suites,
+        extra_exclude_suites=extra_exclude,
+        max_tests=None,
+    )
+    payload: dict[str, Any] = {
+        "upstream_repo": DEFAULT_NODE_UPSTREAM_REPO,
+        "upstream_ref": node_ref,
+        "upstream_commit": git_head_commit(repo_root),
+        "total": len(files),
+        "by_suite": count_tests_by_suite(files),
+        "files": files,
+    }
+    out_path = Path(args.output).resolve() if args.output else (output_dir / "node-tests-inventory.json")
+    write_json(out_path, payload)
+    print(f"Discovered {len(files)} JS test files under test/ (inventory: {out_path})", flush=True)
+    print(json.dumps(payload["by_suite"], indent=2), flush=True)
+    return 0
+
+
 def compare_statuses(baseline: dict[str, str], candidate: dict[str, str]) -> dict:
     baseline_counts = counts_from_status(baseline)
     candidate_counts = counts_from_status(candidate)
@@ -841,6 +1116,89 @@ def build_parser() -> argparse.ArgumentParser:
     run_python.add_argument("--compare-ref", default="origin/main")
     run_python.add_argument("--debug-test")
     run_python.set_defaults(func=run_python_suite)
+
+    run_node = sub.add_parser(
+        "run-node",
+        help="Run upstream nodejs/node tests under wasmer run --experimental-napi (edgejs package)",
+    )
+    run_node.add_argument("--wasmer-ref", default="main")
+    run_node.add_argument("--wasmer-bin")
+    run_node.add_argument("--wasmer-checkout")
+    run_node.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    run_node.add_argument(
+        "--test-py-timeout",
+        type=int,
+        default=120,
+        help="Per-test timeout passed to node tools/test.py (seconds)",
+    )
+    run_node.add_argument("--compare-ref", default="origin/main")
+    run_node.add_argument("--debug-test", metavar="REL_PATH", help="e.g. parallel/test-timers-immediate.js")
+    run_node.add_argument(
+        "--node-upstream-ref",
+        default=None,
+        help=(
+            "nodejs/node git tag, branch, or commit to shallow-fetch "
+            f"(default: {DEFAULT_NODE_UPSTREAM_REF})"
+        ),
+    )
+    run_node.add_argument(
+        "--edgejs-package",
+        default=DEFAULT_EDGEJS_PACKAGE,
+        help=f"Wasmer package spec (default: {DEFAULT_EDGEJS_PACKAGE})",
+    )
+    run_node.add_argument(
+        "--node-suites",
+        default="",
+        help="Comma-separated suite directory names to restrict (e.g. parallel,sequential). Empty = all.",
+    )
+    run_node.add_argument(
+        "--node-exclude-suites",
+        default="",
+        help="Comma-separated extra suite directory names to skip beyond the harness defaults.",
+    )
+    run_node.add_argument(
+        "--node-jobs",
+        type=int,
+        default=None,
+        help="Cap concurrent workers (default: auto from CPU count)",
+    )
+    run_node.add_argument(
+        "--node-max-tests",
+        type=int,
+        default=None,
+        help="Run at most this many tests after sorting (smoke / sampling)",
+    )
+    run_node.set_defaults(func=run_node_suite)
+
+    list_node = sub.add_parser(
+        "list-node-tests",
+        help="Discover JS tests under nodejs/node (no Wasmer run); writes JSON inventory",
+    )
+    list_node.add_argument(
+        "--node-upstream-ref",
+        default=None,
+        help=(
+            "nodejs/node git tag, branch, or commit to shallow-fetch "
+            f"(default: {DEFAULT_NODE_UPSTREAM_REF})"
+        ),
+    )
+    list_node.add_argument(
+        "--node-suites",
+        default="",
+        help="Comma-separated suite directory names under test/ to scan (default: all non-excluded).",
+    )
+    list_node.add_argument(
+        "--node-exclude-suites",
+        default="",
+        help="Comma-separated extra suite directory names to skip beyond the harness defaults.",
+    )
+    list_node.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Write inventory JSON here (default: ./node-tests-inventory.json in cwd)",
+    )
+    list_node.set_defaults(func=list_node_tests)
 
     compare = sub.add_parser("compare-status", help="Compare two status.json snapshots")
     compare.add_argument("--baseline", required=True)
