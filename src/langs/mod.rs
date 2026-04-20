@@ -52,14 +52,20 @@ pub struct Workspace {
 /// Canonical test outcome. Each runner parses its own wire statuses
 /// (Python's unittest lines, PHP's `PASSED`/`BORKED`/`WARNED`/`LEAKED`/
 /// `XFAILED`/`XLEAKED`, Rust's `ok`/`ignored`/`FAILED`, Node's
-/// exit-code rules) and normalizes to one of these four.
+/// exit-code rules) and normalizes to one of these. `Flaky` is normally
+/// produced by the orchestrator's rerun/comparison logic (upgrading a
+/// Pass/Fail after a second pass changes it) — runners can also emit it
+/// directly if they have their own flakiness signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     Pass,
     Fail,
     Skip,
     Timeout,
+    Flaky,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct TestResult {
     pub id: String,
     pub status: Status,
@@ -96,4 +102,52 @@ pub trait LangRunner: Send + Sync {
         wasmer: &WasmerRunner,
         id: &str,
     ) -> Result<Vec<TestResult>>;
+}
+
+#[cfg(test)]
+pub mod tests {
+    use anyhow::Result;
+
+    use super::{LangRunner, RunnerOpts, Status, TestResult, Workspace};
+    use crate::wasmer::WasmerRunner;
+
+    pub struct MockRunner;
+
+    impl LangRunner for MockRunner {
+        const OPTS: RunnerOpts = RunnerOpts {
+            name: "mock",
+            git_repo: "https://example.invalid/mock.git",
+            git_ref: "HEAD",
+            wasmer_package: "mock/mock",
+            docker_compose: None,
+        };
+
+        fn discover(&self, _workspace: &Workspace, filter: Option<&str>) -> Result<Vec<String>> {
+            let all = ["pass_a", "pass_b", "fail_c", "skip_d", "timeout_e", "flaky_f"];
+            Ok(all
+                .iter()
+                .filter(|id| filter.is_none_or(|f| id.contains(f)))
+                .map(|id| (*id).to_string())
+                .collect())
+        }
+
+        fn run_test(
+            &self,
+            _workspace: &Workspace,
+            _wasmer: &WasmerRunner,
+            id: &str,
+        ) -> Result<Vec<TestResult>> {
+            let status = match id.split('_').next().unwrap_or("") {
+                "fail" => Status::Fail,
+                "skip" => Status::Skip,
+                "timeout" => Status::Timeout,
+                "flaky" => Status::Flaky,
+                _ => Status::Pass,
+            };
+            Ok(vec![TestResult {
+                id: id.to_string(),
+                status,
+            }])
+        }
+    }
 }
