@@ -2,3 +2,4 @@ __pycache__/
 .work/
 comparison.json
 test.log
+/target/
