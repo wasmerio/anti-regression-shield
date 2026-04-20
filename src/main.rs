@@ -1,4 +1,5 @@
 mod commands;
+mod git;
 mod langs;
 mod wasmer;
 
