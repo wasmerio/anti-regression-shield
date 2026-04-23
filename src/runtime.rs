@@ -1,18 +1,36 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use flate2::read::GzDecoder;
+use serde::Deserialize;
+use tar::Archive;
 
+use crate::git::{current_branch, ensure_checkout, head_commit};
 pub use crate::process::Stream;
-use crate::process::{ProcessError, ProcessSpec, run_process};
+use crate::process::{ProcessError, ProcessSpec, command_exists, run_command, run_process};
+use crate::reports::WasmerIdentity;
 use crate::run_log::RunLog;
+
+const WASMER_REPO: &str = "https://github.com/wasmerio/wasmer.git";
 
 pub struct WasmerRuntime {
     binary: PathBuf,
     default_timeout: Duration,
     process_log: Arc<RunLog>,
+}
+
+pub enum RuntimeSource {
+    LocalBinary(PathBuf),
+    GitRef(String),
+}
+
+pub struct ResolvedRuntime {
+    pub runtime: WasmerRuntime,
+    pub identity: WasmerIdentity,
 }
 
 pub struct RunSpec {
@@ -22,12 +40,95 @@ pub struct RunSpec {
     pub timeout: Option<Duration>,
 }
 
+#[derive(Deserialize)]
+struct GitHubRun {
+    #[serde(rename = "databaseId")]
+    database_id: u64,
+    #[serde(rename = "headSha")]
+    head_sha: String,
+    conclusion: Option<String>,
+    status: Option<String>,
+    event: Option<String>,
+}
+
 impl WasmerRuntime {
-    pub fn new(binary: PathBuf, default_timeout: Duration, process_log: Arc<RunLog>) -> Self {
-        Self {
-            binary,
-            default_timeout,
-            process_log,
+    pub fn resolve(
+        source: RuntimeSource,
+        work_root: &Path,
+        default_timeout: Duration,
+        process_log: Arc<RunLog>,
+    ) -> Result<ResolvedRuntime> {
+        match source {
+            RuntimeSource::LocalBinary(path) => {
+                let binary = if path.components().count() == 1 {
+                    path
+                } else {
+                    if !path.is_file() {
+                        bail!("--wasmer {} is not a file", path.display());
+                    }
+                    path.canonicalize()?
+                };
+                tracing::info!(path = %binary.display(), "using local Wasmer binary");
+                Ok(ResolvedRuntime {
+                    identity: resolve_local_wasmer_identity(&binary)?,
+                    runtime: Self {
+                        binary,
+                        default_timeout,
+                        process_log,
+                    },
+                })
+            }
+            RuntimeSource::GitRef(git_ref) => {
+                if git_ref == "main" {
+                    if let Some((binary, commit)) = try_download_prebuilt_main_wasmer(work_root)? {
+                        tracing::info!(path = %binary.display(), "using prebuilt Wasmer main artifact");
+                        return Ok(ResolvedRuntime {
+                            identity: WasmerIdentity {
+                                git_ref: git_ref.clone(),
+                                branch: git_ref.clone(),
+                                commit,
+                            },
+                            runtime: Self {
+                                binary,
+                                default_timeout,
+                                process_log,
+                            },
+                        });
+                    }
+                }
+
+                let checkout = ensure_checkout(&work_root.join("wasmer"), WASMER_REPO, &git_ref)?;
+                update_wasmer_submodules(&checkout)?;
+                tracing::info!(path = %checkout.display(), "building Wasmer from source");
+                run_command(
+                    Command::new("cargo")
+                        .args([
+                            "build",
+                            "-p",
+                            "wasmer-cli",
+                            "--features",
+                            "llvm",
+                            "--release",
+                        ])
+                        .current_dir(&checkout),
+                )?;
+                let binary = checkout.join("target").join("release").join("wasmer");
+                if !binary.is_file() {
+                    bail!("built wasmer binary missing at {}", binary.display());
+                }
+                Ok(ResolvedRuntime {
+                    identity: WasmerIdentity {
+                        git_ref: git_ref.clone(),
+                        branch: git_ref,
+                        commit: head_commit(&checkout)?,
+                    },
+                    runtime: Self {
+                        binary,
+                        default_timeout,
+                        process_log,
+                    },
+                })
+            }
         }
     }
 
@@ -47,6 +148,7 @@ impl WasmerRuntime {
             ProcessSpec {
                 program: self.binary.clone(),
                 args,
+                env: vec![("RUST_BACKTRACE".into(), "1".into())],
                 cwd: std::env::current_dir()
                     .map_err(|e| ProcessError::Spawn(format!("resolve cwd: {e}")))?,
                 timeout,
@@ -61,19 +163,169 @@ impl WasmerRuntime {
     }
 }
 
+fn resolve_local_wasmer_identity(wasmer_bin: &Path) -> Result<WasmerIdentity> {
+    if let Some(checkout) = infer_wasmer_checkout_from_bin(wasmer_bin) {
+        if checkout.join(".git").exists() {
+            let branch = current_branch(&checkout)?;
+            let commit = head_commit(&checkout)?;
+            return Ok(WasmerIdentity {
+                git_ref: branch.clone(),
+                branch,
+                commit,
+            });
+        }
+    }
+    Ok(WasmerIdentity {
+        git_ref: "local".to_string(),
+        branch: "local".to_string(),
+        commit: "local".to_string(),
+    })
+}
+
+fn infer_wasmer_checkout_from_bin(wasmer_bin: &Path) -> Option<PathBuf> {
+    wasmer_bin
+        .canonicalize()
+        .ok()?
+        .ancestors()
+        .nth(3)
+        .map(Path::to_path_buf)
+}
+
+fn try_download_prebuilt_main_wasmer(work_root: &Path) -> Result<Option<(PathBuf, String)>> {
+    if !command_exists("gh") {
+        tracing::info!("prebuilt Wasmer main artifact unavailable: gh CLI not found");
+        return Ok(None);
+    }
+    if std::env::consts::OS != "linux" {
+        tracing::info!(
+            os = std::env::consts::OS,
+            "prebuilt Wasmer main artifact unavailable: unsupported OS"
+        );
+        return Ok(None);
+    }
+    if !matches!(std::env::consts::ARCH, "x86_64" | "amd64") {
+        tracing::info!(
+            arch = std::env::consts::ARCH,
+            "prebuilt Wasmer main artifact unavailable: unsupported machine"
+        );
+        return Ok(None);
+    }
+
+    let out = Command::new("gh")
+        .args([
+            "run",
+            "list",
+            "--repo",
+            "wasmerio/wasmer",
+            "--workflow",
+            "build.yml",
+            "--branch",
+            "main",
+            "--limit",
+            "10",
+            "--json",
+            "databaseId,headSha,conclusion,status,event",
+        ])
+        .output()?;
+    if !out.status.success() {
+        tracing::warn!("prebuilt Wasmer main artifact lookup failed");
+        if !out.stderr.is_empty() {
+            tracing::warn!("{}", String::from_utf8_lossy(&out.stderr));
+        }
+        return Ok(None);
+    }
+    let runs: Vec<GitHubRun> = serde_json::from_slice(&out.stdout)?;
+    let Some(run) = runs.into_iter().find(|run| {
+        run.status.as_deref() == Some("completed")
+            && run.conclusion.as_deref() == Some("success")
+            && run.event.as_deref() == Some("push")
+    }) else {
+        tracing::info!(
+            "prebuilt Wasmer main artifact unavailable: no successful main push build run found"
+        );
+        return Ok(None);
+    };
+
+    let cache_dir = work_root.join("prebuilt-wasmer").join(&run.head_sha);
+    let install_dir = cache_dir.join("install");
+    let wasmer_bin = install_dir.join("bin").join("wasmer");
+    if wasmer_bin.exists() {
+        tracing::info!(sha = %run.head_sha, "using cached prebuilt Wasmer main artifact");
+        return Ok(Some((wasmer_bin, run.head_sha)));
+    }
+
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir)?;
+    }
+    std::fs::create_dir_all(&cache_dir)?;
+    let download = Command::new("gh")
+        .args([
+            "run",
+            "download",
+            &run.database_id.to_string(),
+            "--repo",
+            "wasmerio/wasmer",
+            "-n",
+            "wasmer-linux-amd64",
+            "-D",
+        ])
+        .arg(&cache_dir)
+        .output()?;
+    if !download.status.success() {
+        tracing::warn!("prebuilt Wasmer main artifact download failed");
+        if !download.stderr.is_empty() {
+            tracing::warn!("{}", String::from_utf8_lossy(&download.stderr));
+        }
+        return Ok(None);
+    }
+
+    let archive = cache_dir.join("wasmer.tar.gz");
+    if !archive.exists() {
+        tracing::warn!("prebuilt Wasmer main artifact download failed: wasmer.tar.gz missing");
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&install_dir)?;
+    let archive_file = std::fs::File::open(&archive)?;
+    if let Err(error) = Archive::new(GzDecoder::new(archive_file)).unpack(&install_dir) {
+        tracing::warn!("prebuilt Wasmer main artifact extraction failed: {error}");
+        return Ok(None);
+    }
+    if !wasmer_bin.exists() {
+        tracing::warn!("prebuilt Wasmer main artifact extraction failed: bin/wasmer missing");
+        return Ok(None);
+    }
+    Ok(Some((wasmer_bin, run.head_sha)))
+}
+
+fn update_wasmer_submodules(checkout: &Path) -> Result<()> {
+    run_command(
+        Command::new("git")
+            .args(["submodule", "update", "--init", "--depth", "1", "lib/napi"])
+            .current_dir(checkout),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempdir::TempDir;
 
     #[test]
-    fn runs_wasmer_version() {
+    fn runtime_resolves_binary() {
         let dir = TempDir::new("shield-runtime").expect("tempdir");
+        let resolved = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::from_secs(10),
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
         let mut version = String::new();
         run_process(
             ProcessSpec {
-                program: "wasmer".into(),
+                program: resolved.runtime.binary.clone(),
                 args: vec!["--version".into()],
+                env: vec![("RUST_BACKTRACE".into(), "1".into())],
                 cwd: std::env::current_dir().expect("cwd"),
                 timeout: Duration::from_secs(10),
                 log_output: Arc::new(RunLog::new(dir.path().join("process.log"))),
@@ -88,5 +340,20 @@ mod tests {
         )
         .expect("version");
         assert!(version.to_lowercase().contains("wasmer"));
+    }
+
+    #[test]
+    #[ignore = "slow: resolves Wasmer main by downloading or building from source"]
+    fn runtime_resolves_git() {
+        let dir = TempDir::new("shield-runtime-main").expect("tempdir");
+        let resolved = WasmerRuntime::resolve(
+            RuntimeSource::GitRef("main".to_string()),
+            dir.path(),
+            Duration::from_secs(10),
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+        assert!(!resolved.identity.commit.is_empty());
+        assert!(resolved.runtime.binary.is_file());
     }
 }

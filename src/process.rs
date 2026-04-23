@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 
@@ -23,6 +23,7 @@ pub enum Stream {
 pub struct ProcessSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub timeout: Duration,
     pub log_output: Arc<RunLog>,
@@ -64,6 +65,7 @@ where
     cmd.args(&spec.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.envs(spec.env.iter().map(|(k, v)| (k, v)));
     cmd.current_dir(&spec.cwd);
     let mut child = spawn_process(&spec, cmd)?;
     let stdout = child
@@ -247,6 +249,22 @@ fn join_reader(handle: thread::JoinHandle<()>) -> std::result::Result<(), Proces
         .map_err(|_| ProcessError::AbnormalExit("reader thread panicked".to_string()))
 }
 
+pub fn run_command(cmd: &mut Command) -> Result<()> {
+    let status = cmd.status()?;
+    if !status.success() {
+        bail!("command exited with {status}");
+    }
+    Ok(())
+}
+
+pub fn command_exists(name: &str) -> bool {
+    Command::new("sh")
+        .args(["-c", &format!("command -v {name} >/dev/null 2>&1")])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn stream_name(stream: Stream) -> &'static str {
     match stream {
         Stream::Stdout => "stdout",
@@ -264,6 +282,7 @@ mod tests {
         ProcessSpec {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
+            env: vec![],
             cwd: std::env::current_dir().expect("cwd"),
             timeout: Duration::from_secs(1),
             log_output: Arc::new(RunLog::new(
