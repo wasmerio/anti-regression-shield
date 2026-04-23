@@ -76,7 +76,6 @@ impl PythonRunner {
         git_ref: "e3245fc95e570ac823deb50689041bc1f81d6b27",
         wasmer_package: "python/python",
         wasmer_flags: &[],
-        wasmer_package_warmup_args: &["-c", "print('ok')"],
         docker_compose: None,
     };
 

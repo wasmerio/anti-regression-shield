@@ -11,7 +11,9 @@ use tar::Archive;
 
 use crate::git::{current_branch, ensure_checkout, head_commit};
 pub use crate::process::Stream;
-use crate::process::{ProcessError, ProcessSpec, command_exists, run_command, run_process};
+use crate::process::{
+    ProcessError, ProcessSpec, command_exists, ignore_stream, run_command, run_process,
+};
 use crate::reports::WasmerIdentity;
 use crate::run_log::RunLog;
 
@@ -168,8 +170,16 @@ impl WasmerRuntime {
         &self.binary
     }
 
-    pub fn compile(&self, _wasm: &Path) -> Result<PathBuf> {
-        unimplemented!()
+    pub fn compile(&self, package: &str, flags: &[String]) -> std::result::Result<(), ProcessError> {
+        self.run(
+            RunSpec {
+                package: package.to_string(),
+                flags: flags.to_vec(),
+                args: Vec::new(),
+                timeout: None,
+            },
+            ignore_stream,
+        )
     }
 }
 

@@ -13,10 +13,9 @@ use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
 use crate::langs::rust::RustRunner;
 use crate::langs::{LangRunner, Mode, Status, TestResult, Workspace};
-use crate::process::ignore_stream;
 use crate::reports::{finalize_run, load_baseline_status};
 use crate::run_log::RunLog;
-use crate::runtime::{RunSpec, RuntimeSource, WasmerRuntime};
+use crate::runtime::{RuntimeSource, WasmerRuntime};
 
 const RETEST_TIMEOUT: Duration = Duration::from_secs(300);
 const RETEST_RUNS: usize = 3;
@@ -137,27 +136,18 @@ fn run_with_runner(
     tracing::info!(
         runner = opts.name,
         package = opts.wasmer_package,
-        "warming up language runtime"
+        "compiling language runtime package"
     );
     wasmer
-        .run(
-            RunSpec {
-                package: opts.wasmer_package.to_string(),
-                flags: opts
-                    .wasmer_flags
-                    .iter()
-                    .map(|flag| (*flag).to_string())
-                    .collect(),
-                args: opts
-                    .wasmer_package_warmup_args
-                    .iter()
-                    .map(|arg| (*arg).to_string())
-                    .collect(),
-                timeout: Some(args.timeout),
-            },
-            ignore_stream,
+        .compile(
+            opts.wasmer_package,
+            &opts
+                .wasmer_flags
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect::<Vec<_>>(),
         )
-        .map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
+        .map_err(|e| anyhow::anyhow!("compile failed: {e:?}"))?;
 
     let report = execute_tests(
         runner,

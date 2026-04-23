@@ -41,7 +41,6 @@ impl NodeRunner {
         git_ref: "v24.13.1",
         wasmer_package: "wasmer/edgejs",
         wasmer_flags: &["--experimental-napi"],
-        wasmer_package_warmup_args: &["-e", "console.log('ok')"],
         docker_compose: None,
     };
 
