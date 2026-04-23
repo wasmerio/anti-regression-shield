@@ -19,6 +19,7 @@ impl PhpRunner {
         git_repo: "https://github.com/wasix-org/php.git",
         git_ref: "6dd6dd1c7e409b8e9dcba8a8d6f9b7b5f944cc9e",
         wasmer_package: "php/php-32",
+        wasmer_flags: &[],
         wasmer_package_warmup_args: &["-r", "echo \"ok\";"],
         docker_compose: None,
     };

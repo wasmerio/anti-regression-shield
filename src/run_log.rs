@@ -10,6 +10,12 @@ pub struct RunLog {
     file: Mutex<File>,
 }
 
+impl Clone for RunLog {
+    fn clone(&self) -> Self {
+        Self::new(self.path.clone())
+    }
+}
+
 impl RunLog {
     pub fn new(path: PathBuf) -> Self {
         let file = OpenOptions::new()

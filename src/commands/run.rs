@@ -143,7 +143,11 @@ fn run_with_runner(
         .run(
             RunSpec {
                 package: opts.wasmer_package.to_string(),
-                flags: vec![],
+                flags: opts
+                    .wasmer_flags
+                    .iter()
+                    .map(|flag| (*flag).to_string())
+                    .collect(),
                 args: opts
                     .wasmer_package_warmup_args
                     .iter()
@@ -479,6 +483,34 @@ mod tests {
             ExecutionReport {
                 results: vec![TestResult {
                     id: "tests/basic/001.phpt".into(),
+                    status: Status::Pass,
+                }],
+                counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),
+                errors: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn run_node_debug() {
+        let report = run_with_runner(
+            RunArgs {
+                lang: Lang::Node,
+                filter: Some("parallel/test-assert.js".into()),
+                wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_ref: None,
+                timeout: Duration::from_secs(30),
+                compare_ref: "origin/main".into(),
+            },
+            "1970-01-01T00:00:00Z",
+            &NodeRunner,
+        )
+        .expect("run");
+        assert_eq!(
+            report,
+            ExecutionReport {
+                results: vec![TestResult {
+                    id: "parallel/test-assert.js".into(),
                     status: Status::Pass,
                 }],
                 counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),

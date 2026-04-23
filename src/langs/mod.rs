@@ -21,6 +21,8 @@ pub struct RunnerOpts {
     pub git_ref: &'static str,
     /// Wasmer package name, ex: python/python
     pub wasmer_package: &'static str,
+    /// Wasmer flags, ex: --experimental-napi
+    pub wasmer_flags: &'static [&'static str],
     /// Wasmer package warmup args, ex: "-c", "print('ok')"
     pub wasmer_package_warmup_args: &'static [&'static str],
     /// Optional docker compose file, ex: docker-compose.yml
@@ -105,6 +107,7 @@ pub mod tests {
             git_repo: "https://example.invalid/mock.git",
             git_ref: "HEAD",
             wasmer_package: "mock/mock",
+            wasmer_flags: &[],
             wasmer_package_warmup_args: &["--version"],
             docker_compose: None,
         };

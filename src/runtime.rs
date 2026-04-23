@@ -164,6 +164,10 @@ impl WasmerRuntime {
         )
     }
 
+    pub(crate) fn binary_path(&self) -> &Path {
+        &self.binary
+    }
+
     pub fn compile(&self, _wasm: &Path) -> Result<PathBuf> {
         unimplemented!()
     }
