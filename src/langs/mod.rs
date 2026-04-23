@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::run_log::RunLog;
-use crate::wasmer::WasmerRuntime;
+use crate::runtime::WasmerRuntime;
 
 pub struct RunnerOpts {
     pub name: &'static str,
@@ -67,7 +67,7 @@ pub mod tests {
 
     use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
     use crate::run_log::RunLog;
-    use crate::wasmer::WasmerRuntime;
+    use crate::runtime::WasmerRuntime;
 
     pub struct MockRunner;
 

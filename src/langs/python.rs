@@ -10,8 +10,9 @@ use rayon::{ThreadPoolBuilder, prelude::*};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
 use crate::commands::run::{ExecutionReport, ItemError, StatusCounts};
+use crate::process::ProcessError;
 use crate::run_log::RunLog;
-use crate::wasmer::{RunSpec, Stream, WasmerRuntime};
+use crate::runtime::{RunSpec, Stream, WasmerRuntime};
 
 const DISCOVER_AND_RUN: &str = r#"import os,sys,unittest
 job = sys.argv[1]
@@ -107,20 +108,26 @@ impl PythonRunner {
         id: &str,
         timeout: Duration,
     ) -> Result<Vec<String>> {
-        let out = wasmer.run(
+        let mut stdout = String::new();
+        let result = wasmer.run(
             RunSpec {
                 package: Self::OPTS.wasmer_package.to_string(),
                 flags: vec!["--volume".into(), self.volume_flag(workspace)?],
                 args: vec!["-c".into(), DISCOVER_CASES.into(), id.into()],
                 timeout: Some(timeout),
             },
-            |_, _| Ok(()),
-        )?;
-        if out.timed_out {
+            |stream, line| {
+                if matches!(stream, Stream::Stdout) {
+                    stdout.push_str(line);
+                    stdout.push('\n');
+                }
+                Ok(())
+            },
+        );
+        if matches!(result, Err(ProcessError::Timeout(_))) {
             return Ok(vec![id.to_string()]);
         }
-        let mut names: Vec<String> = out
-            .stdout
+        let mut names: Vec<String> = stdout
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with("unittest.loader."))
@@ -128,8 +135,15 @@ impl PythonRunner {
             .collect();
         names.sort();
         names.dedup();
-        if names.is_empty() && out.exit_code != Some(0) {
-            names.push(id.to_string());
+        match result {
+            Ok(()) => {}
+            Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
+                if names.is_empty() {
+                    names.push(id.to_string());
+                }
+            }
+            Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
+            Err(ProcessError::Timeout(_)) => unreachable!(),
         }
         Ok(names)
     }
@@ -142,27 +156,45 @@ impl PythonRunner {
         log: Option<&RunLog>,
         timeout: Duration,
     ) -> Result<String> {
-        let out = wasmer.run(
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let result = wasmer.run(
             RunSpec {
                 package: Self::OPTS.wasmer_package.to_string(),
                 flags: vec!["--volume".into(), self.volume_flag(workspace)?],
                 args: vec!["-m".into(), "unittest".into(), "-v".into(), id.into()],
                 timeout: Some(timeout),
             },
-            |_, _| Ok(()),
-        )?;
+            |stream, line| {
+                match stream {
+                    Stream::Stdout => {
+                        stdout.push_str(line);
+                        stdout.push('\n');
+                    }
+                    Stream::Stderr => {
+                        stderr.push_str(line);
+                        stderr.push('\n');
+                    }
+                }
+                Ok(())
+            },
+        );
         if let Some(log) = log {
             log.append(
-                &format!("rerun {id}{}", if out.timed_out { " TIMEOUT" } else { "" }),
-                &out.stdout,
-                &out.stderr,
+                &format!(
+                    "rerun {id}{}",
+                    if matches!(result, Err(ProcessError::Timeout(_))) {
+                        " TIMEOUT"
+                    } else {
+                        ""
+                    }
+                ),
+                &stdout,
+                &stderr,
             )?;
         }
-        Ok(parse_debug_status(
-            &(out.stdout.clone() + &out.stderr),
-            out.exit_code,
-            out.timed_out,
-        ))
+        let output = stdout + &stderr;
+        Ok(parse_debug_status(&output, &result))
     }
 
     pub fn run_suite_capture(
@@ -346,30 +378,56 @@ impl PythonRunner {
         log: Option<&RunLog>,
     ) -> Result<CapturedModuleRun> {
         let mut parser = PythonProtocol::default();
-        let out = wasmer.run(
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let result = wasmer.run(
             RunSpec {
                 package: Self::OPTS.wasmer_package.to_string(),
                 flags: vec!["--volume".into(), self.volume_flag(workspace)?],
                 args: vec!["-c".into(), DISCOVER_AND_RUN.into(), id.into()],
                 timeout: None,
             },
-            |stream, chunk| {
-                if matches!(stream, Stream::Stdout) {
-                    parser.feed(chunk);
+            |stream, line| {
+                match stream {
+                    Stream::Stdout => {
+                        parser.handle_line(line);
+                        if log.is_some() {
+                            stdout.push_str(line);
+                            stdout.push('\n');
+                        }
+                    }
+                    Stream::Stderr => {
+                        if log.is_some() {
+                            stderr.push_str(line);
+                            stderr.push('\n');
+                        }
+                    }
                 }
                 Ok(())
             },
-        )?;
+        );
         if let Some(log) = log {
             log.append(
-                &format!("module {id}{}", if out.timed_out { " TIMEOUT" } else { "" }),
-                &out.stdout,
-                &out.stderr,
+                &format!(
+                    "module {id}{}",
+                    if matches!(result, Err(ProcessError::Timeout(_))) {
+                        " TIMEOUT"
+                    } else {
+                        ""
+                    }
+                ),
+                &stdout,
+                &stderr,
             )?;
         }
+        match &result {
+            Ok(()) | Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {}
+            Err(ProcessError::Timeout(_)) => {}
+            Err(ProcessError::Spawn(message)) => return Err(anyhow!(message.clone())),
+        }
         Ok(CapturedModuleRun {
-            results: parser.finish(out.timed_out, id),
-            timed_out: out.timed_out,
+            results: parser.finish(matches!(result, Err(ProcessError::Timeout(_))), id),
+            timed_out: matches!(result, Err(ProcessError::Timeout(_))),
         })
     }
 }
@@ -441,7 +499,7 @@ impl LangRunner for PythonRunner {
         Ok(match mode {
             Mode::Capture => self.run_module_capture(workspace, wasmer, id, log)?.results,
             Mode::Debug => {
-                let out = wasmer.run(
+                let result = wasmer.run(
                     RunSpec {
                         package: Self::OPTS.wasmer_package.to_string(),
                         flags: vec!["--volume".into(), self.volume_flag(workspace)?],
@@ -449,13 +507,14 @@ impl LangRunner for PythonRunner {
                         timeout: None,
                     },
                     write_stream,
-                )?;
-                let status = if out.timed_out {
-                    Status::Timeout
-                } else if out.exit_code == Some(0) {
-                    Status::Pass
-                } else {
-                    Status::Fail
+                );
+                let status = match result {
+                    Ok(()) => Status::Pass,
+                    Err(ProcessError::Timeout(_)) => Status::Timeout,
+                    Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
+                        Status::Fail
+                    }
+                    Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
                 };
                 vec![TestResult {
                     id: id.to_string(),
@@ -474,40 +533,55 @@ fn parse_run_output(stdout: &str, timed_out: bool, module_id: &str) -> Vec<TestR
 }
 
 fn resolve_guest_test_dir(wasmer: &WasmerRuntime) -> Result<String> {
-    let out = wasmer
-        .run(
-            RunSpec {
-                package: PythonRunner::OPTS.wasmer_package.to_string(),
-                flags: vec![],
-                args: vec!["-c".into(), GUEST_TEST_DIR_CODE.into()],
-                timeout: Some(std::time::Duration::from_secs(10)),
-            },
-            |_, _| Ok(()),
-        )
-        .context("resolving guest test dir via wasmer run")?;
-    let dir = out.stdout.trim();
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let result = wasmer.run(
+        RunSpec {
+            package: PythonRunner::OPTS.wasmer_package.to_string(),
+            flags: vec![],
+            args: vec!["-c".into(), GUEST_TEST_DIR_CODE.into()],
+            timeout: Some(std::time::Duration::from_secs(10)),
+        },
+        |stream, line| {
+            match stream {
+                Stream::Stdout => {
+                    stdout.push_str(line);
+                    stdout.push('\n');
+                }
+                Stream::Stderr => {
+                    stderr.push_str(line);
+                    stderr.push('\n');
+                }
+            }
+            Ok(())
+        },
+    );
+    if let Err(err) = result {
+        bail!("guest test dir probe failed: {err:?}\nstderr: {}", stderr);
+    }
+    let dir = stdout.trim();
     if !dir.starts_with('/') {
         bail!(
             "guest test dir probe produced garbage (expected absolute path):\n\
              stdout: {:?}\nstderr: {}",
-            out.stdout,
-            out.stderr,
+            stdout,
+            stderr,
         );
     }
     Ok(dir.to_string())
 }
 
-fn parse_debug_status(output: &str, exit_code: Option<i32>, timed_out: bool) -> String {
-    if timed_out {
+fn parse_debug_status(output: &str, result: &std::result::Result<(), ProcessError>) -> String {
+    if matches!(result, Err(ProcessError::Timeout(_))) {
         return "TIMEOUT".to_string();
     }
     if output.contains("... skipped ") {
         return "SKIP".to_string();
     }
-    if output.lines().any(|line| line.starts_with("OK")) && exit_code == Some(0) {
+    if output.lines().any(|line| line.starts_with("OK")) && result.is_ok() {
         return "PASS".to_string();
     }
-    if output.lines().any(|line| line.starts_with("FAILED (")) || exit_code != Some(0) {
+    if output.lines().any(|line| line.starts_with("FAILED (")) || result.is_err() {
         return "FAIL".to_string();
     }
     "TIMEOUT".to_string()
@@ -734,16 +808,16 @@ impl PythonProtocol {
     }
 }
 
-fn write_stream(stream: Stream, chunk: &[u8]) -> Result<()> {
+fn write_stream(stream: Stream, line: &str) -> Result<()> {
     match stream {
         Stream::Stdout => {
             let mut out = std::io::stdout().lock();
-            out.write_all(chunk)?;
+            writeln!(out, "{line}")?;
             out.flush()?;
         }
         Stream::Stderr => {
             let mut err = std::io::stderr().lock();
-            err.write_all(chunk)?;
+            writeln!(err, "{line}")?;
             err.flush()?;
         }
     }
@@ -899,19 +973,22 @@ PASS mod.A
     #[test]
     fn debug_status_detects_skip() {
         assert_eq!(
-            parse_debug_status("test_x ... skipped 'nope'\n", Some(0), false),
+            parse_debug_status("test_x ... skipped 'nope'\n", &Ok(())),
             "SKIP"
         );
     }
 
     #[test]
     fn debug_status_detects_pass() {
-        assert_eq!(parse_debug_status("...\nOK\n", Some(0), false), "PASS");
+        assert_eq!(parse_debug_status("...\nOK\n", &Ok(())), "PASS");
     }
 
     #[test]
     fn debug_status_detects_timeout() {
-        assert_eq!(parse_debug_status("", None, true), "TIMEOUT");
+        assert_eq!(
+            parse_debug_status("", &Err(ProcessError::Timeout("timeout".into()))),
+            "TIMEOUT"
+        );
     }
 
     #[test]

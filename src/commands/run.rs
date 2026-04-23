@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
@@ -15,7 +16,7 @@ use crate::langs::python::PythonRunner;
 use crate::langs::{LangRunner, Mode, Status, TestResult, Workspace};
 use crate::reports::{ReportContext, WasmerIdentity, finalize_debug_run, finalize_run};
 use crate::run_log::RunLog;
-use crate::wasmer::WasmerRuntime;
+use crate::runtime::WasmerRuntime;
 
 const MIN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
 const WASMER_REPO: &str = "https://github.com/wasmerio/wasmer.git";
@@ -113,6 +114,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         Mode::Capture
     };
     let resolved_wasmer = resolve_wasmer(&args, &work_root)?;
+    let process_log = Arc::new(RunLog::new(workspace.output_dir.join("test.log")));
     let wasmer = WasmerRuntime::new(
         resolved_wasmer.bin.clone(),
         if matches!(mode, Mode::Capture) {
@@ -120,9 +122,9 @@ pub fn run(args: RunArgs) -> Result<()> {
         } else {
             args.timeout
         },
+        process_log.clone(),
     );
-    let log =
-        matches!(mode, Mode::Capture).then(|| RunLog::new(workspace.output_dir.join("test.log")));
+    let log = matches!(mode, Mode::Capture).then_some(process_log);
 
     if let Some(log) = &log {
         log.clear()?;
@@ -144,7 +146,7 @@ pub fn run(args: RunArgs) -> Result<()> {
     let report = runner.run_suite_capture(
         &workspace,
         &wasmer,
-        log.as_ref(),
+        log.as_deref(),
         args.timeout.max(MIN_CAPTURE_TIMEOUT),
     )?;
     if !report.errors.is_empty() {
@@ -176,7 +178,7 @@ pub fn run(args: RunArgs) -> Result<()> {
     let (status, flaky_count) = runner.stabilize_changed_tests(
         &workspace,
         &wasmer,
-        log.as_ref(),
+        log.as_deref(),
         &baseline_status,
         status,
     )?;
@@ -493,6 +495,7 @@ fn command_exists(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::langs::tests::MockRunner;
+    use tempdir::TempDir;
 
     #[test]
     fn mock_runner_reports_mixed_statuses() {
@@ -501,7 +504,12 @@ mod tests {
             checkout: PathBuf::new(),
             work_dir: PathBuf::new(),
         };
-        let wasmer = WasmerRuntime::new(PathBuf::new(), Duration::ZERO);
+        let dir = TempDir::new("shield-run").expect("tempdir");
+        let wasmer = WasmerRuntime::new(
+            PathBuf::new(),
+            Duration::ZERO,
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        );
         let report = execute_tests(&MockRunner, &workspace, &wasmer, None, None, Mode::Capture)
             .expect("execute_tests should succeed");
 

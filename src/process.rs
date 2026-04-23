@@ -101,9 +101,18 @@ where
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                if !state.timed_out {
-                    let _ = child.kill();
-                    state.timed_out = true;
+                if !state.timed_out && Instant::now() >= deadline {
+                    match child.try_wait() {
+                        Ok(Some(_)) => continue,
+                        Ok(None) => {
+                            let _ = child.kill();
+                            state.timed_out = true;
+                        }
+                        Err(e) => {
+                            abort = Some(ProcessError::AbnormalExit(format!("wait failed: {e}")));
+                            break;
+                        }
+                    }
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -324,10 +333,9 @@ mod tests {
         )
         .expect_err("panic");
         match err {
-            ProcessError::RustPanic(text) => assert_eq!(
-                text,
-                "thread 'main' panicked at boom\nnext\n"
-            ),
+            ProcessError::RustPanic(text) => {
+                assert_eq!(text, "thread 'main' panicked at boom\nnext\n")
+            }
             other => panic!("unexpected error: {other:?}"),
         }
     }

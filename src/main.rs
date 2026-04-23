@@ -4,7 +4,7 @@ mod langs;
 mod process;
 mod reports;
 mod run_log;
-mod wasmer;
+mod runtime;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

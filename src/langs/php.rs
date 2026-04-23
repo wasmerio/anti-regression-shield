@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use super::{LangRunner, Mode, RunnerOpts, TestResult, Workspace};
 use crate::run_log::RunLog;
-use crate::wasmer::WasmerRuntime;
+use crate::runtime::WasmerRuntime;
 
 pub struct PhpRunner;
 
