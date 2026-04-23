@@ -20,3 +20,7 @@ rayon = "1.12.0"
 subprocess = "0.2"
 tar = "0.4.45"
 flate2 = "1.1.9"
+process-wrap = { version = "9", features = ["std"] }
+
+[dev-dependencies]
+tempdir = "0.3"

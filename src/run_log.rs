@@ -52,4 +52,14 @@ impl RunLog {
         writeln!(f)?;
         Ok(())
     }
+
+    pub fn write_line(&self, stream: &str, line: &str) -> Result<()> {
+        let _guard = self.lock.lock().map_err(|_| anyhow!("log lock poisoned"))?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        writeln!(f, "[{stream}] {line}")?;
+        Ok(())
+    }
 }

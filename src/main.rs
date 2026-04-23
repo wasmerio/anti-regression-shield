@@ -1,6 +1,7 @@
 mod commands;
 mod git;
 mod langs;
+mod process;
 mod reports;
 mod run_log;
 mod wasmer;
