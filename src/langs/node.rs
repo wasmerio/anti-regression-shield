@@ -12,6 +12,7 @@ impl NodeRunner {
         git_repo: "https://github.com/nodejs/node.git",
         git_ref: "v24.13.1",
         wasmer_package: "wasmer/edgejs",
+        wasmer_package_warmup_args: &["-e", "console.log('ok')"],
         docker_compose: None,
     };
 }

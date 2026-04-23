@@ -63,6 +63,7 @@ where
 {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd.envs(spec.env.iter().map(|(k, v)| (k, v)));

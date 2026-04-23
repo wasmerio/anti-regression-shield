@@ -75,6 +75,7 @@ impl PythonRunner {
         git_repo: "https://github.com/wasix-org/cpython.git",
         git_ref: "e3245fc95e570ac823deb50689041bc1f81d6b27",
         wasmer_package: "python/python",
+        wasmer_package_warmup_args: &["-c", "print('ok')"],
         docker_compose: None,
     };
 
@@ -151,11 +152,9 @@ impl PythonRunner {
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
         id: &str,
-        log: Option<&RunLog>,
+        _log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
         let mut parser = PythonProtocol::default();
-        let mut stdout = String::new();
-        let mut stderr = String::new();
         let result = wasmer.run(
             RunSpec {
                 package: Self::OPTS.wasmer_package.to_string(),
@@ -164,38 +163,12 @@ impl PythonRunner {
                 timeout: None,
             },
             |stream, line| {
-                match stream {
-                    Stream::Stdout => {
-                        parser.handle_line(line);
-                        if log.is_some() {
-                            stdout.push_str(line);
-                            stdout.push('\n');
-                        }
-                    }
-                    Stream::Stderr => {
-                        if log.is_some() {
-                            stderr.push_str(line);
-                            stderr.push('\n');
-                        }
-                    }
+                if matches!(stream, Stream::Stdout) {
+                    parser.handle_line(line);
                 }
                 Ok(())
             },
         );
-        if let Some(log) = log {
-            log.append(
-                &format!(
-                    "module {id}{}",
-                    if matches!(result, Err(ProcessError::Timeout(_))) {
-                        " TIMEOUT"
-                    } else {
-                        ""
-                    }
-                ),
-                &stdout,
-                &stderr,
-            )?;
-        }
         match &result {
             Ok(()) | Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {}
             Err(ProcessError::Timeout(_)) => {}
@@ -319,7 +292,7 @@ fn resolve_guest_test_dir(wasmer: &WasmerRuntime) -> Result<String> {
             package: PythonRunner::OPTS.wasmer_package.to_string(),
             flags: vec![],
             args: vec!["-c".into(), GUEST_TEST_DIR_CODE.into()],
-            timeout: Some(std::time::Duration::from_secs(10)),
+            timeout: None,
         },
         |stream, line| {
             match stream {

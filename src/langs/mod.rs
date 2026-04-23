@@ -13,10 +13,17 @@ use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
 
 pub struct RunnerOpts {
+    /// Runner name, ex: python
     pub name: &'static str,
+    /// Upstream git repo. ex: https://github.com/python/cpython.git
     pub git_repo: &'static str,
+    /// Upstream git ref, ex: main
     pub git_ref: &'static str,
+    /// Wasmer package name, ex: python/python
     pub wasmer_package: &'static str,
+    /// Wasmer package warmup args, ex: "-c", "print('ok')"
+    pub wasmer_package_warmup_args: &'static [&'static str],
+    /// Optional docker compose file, ex: docker-compose.yml
     pub docker_compose: Option<&'static str>,
 }
 
@@ -98,6 +105,7 @@ pub mod tests {
             git_repo: "https://example.invalid/mock.git",
             git_ref: "HEAD",
             wasmer_package: "mock/mock",
+            wasmer_package_warmup_args: &["--version"],
             docker_compose: None,
         };
     }

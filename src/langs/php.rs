@@ -12,6 +12,7 @@ impl PhpRunner {
         git_repo: "TODO",
         git_ref: "TODO",
         wasmer_package: "php/php",
+        wasmer_package_warmup_args: &["-r", "echo \"ok\\n\";"],
         docker_compose: None,
     };
 }

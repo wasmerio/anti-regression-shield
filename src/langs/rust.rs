@@ -12,6 +12,7 @@ impl RustRunner {
         git_repo: "https://github.com/wasix-org/rust.git",
         git_ref: "v2025-11-07.1+rust-1.90",
         wasmer_package: "rust",
+        wasmer_package_warmup_args: &["--version"],
         docker_compose: None,
     };
 }

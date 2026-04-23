@@ -7,15 +7,15 @@ use anyhow::{Result, bail};
 use clap::{Args, ValueEnum};
 use rayon::prelude::*;
 
-use crate::git::{ensure_checkout, file_json};
+use crate::git::ensure_checkout;
 use crate::langs::node::NodeRunner;
 use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
 use crate::langs::rust::RustRunner;
 use crate::langs::{LangRunner, Mode, Status, TestResult, Workspace};
-use crate::reports::{finalize_debug_run, finalize_run};
+use crate::reports::{finalize_run, load_baseline_status};
 use crate::run_log::RunLog;
-use crate::runtime::{RuntimeSource, WasmerRuntime};
+use crate::runtime::{RunSpec, RuntimeSource, WasmerRuntime};
 
 const RETEST_TIMEOUT: Duration = Duration::from_secs(300);
 const RETEST_RUNS: usize = 3;
@@ -51,7 +51,7 @@ pub struct RunArgs {
     #[arg(long, value_parser = humantime::parse_duration, default_value = "10m")]
     pub timeout: Duration,
 
-    /// Git ref used to load baseline `status.json` for stabilization/comparison.
+    /// Git ref used to load baseline language-specific status file for stabilization/comparison.
     #[arg(long, default_value = "origin/main")]
     pub compare_ref: String,
 }
@@ -81,16 +81,21 @@ impl StatusCounts {
 pub fn run(args: RunArgs) -> Result<()> {
     let started_at = now_utc();
     match args.lang {
-        Lang::Python => run_with_runner(args, &started_at, &PythonRunner::new()),
-        Lang::Node => run_with_runner(args, &started_at, &NodeRunner),
-        Lang::Php => run_with_runner(args, &started_at, &PhpRunner),
-        Lang::Rust => run_with_runner(args, &started_at, &RustRunner),
-    }
+        Lang::Python => run_with_runner(args, &started_at, &PythonRunner::new())?,
+        Lang::Node => run_with_runner(args, &started_at, &NodeRunner)?,
+        Lang::Php => run_with_runner(args, &started_at, &PhpRunner)?,
+        Lang::Rust => run_with_runner(args, &started_at, &RustRunner)?,
+    };
+    Ok(())
 }
 
-fn run_with_runner(args: RunArgs, started_at: &str, runner: &dyn LangRunner) -> Result<()> {
-    let opts = runner.opts();
+fn run_with_runner(
+    args: RunArgs,
+    started_at: &str,
+    runner: &dyn LangRunner,
+) -> Result<ExecutionReport> {
     let output_dir = std::env::current_dir()?;
+    let opts = runner.opts();
     let work_root = output_dir.join(".work");
     let work_dir = work_root.join(opts.name);
     let checkout = ensure_checkout(&work_dir, opts.git_repo, opts.git_ref)?;
@@ -128,40 +133,42 @@ fn run_with_runner(args: RunArgs, started_at: &str, runner: &dyn LangRunner) -> 
         log.clear()?;
     }
 
-    if matches!(mode, Mode::Debug) {
-        let report = execute_tests(
-            runner,
-            &workspace,
-            &wasmer,
-            None,
-            args.filter.as_deref(),
-            mode,
-        )?;
-        finalize_debug_run(&report)?;
-        return Ok(());
-    }
+    tracing::info!(
+        runner = opts.name,
+        package = opts.wasmer_package,
+        "warming up language runtime"
+    );
+    wasmer
+        .run(
+            RunSpec {
+                package: opts.wasmer_package.to_string(),
+                flags: vec![],
+                args: opts
+                    .wasmer_package_warmup_args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect(),
+                timeout: Some(args.timeout),
+            },
+            |_, _| Ok(()),
+        )
+        .map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
 
     let report = execute_tests(
         runner,
         &workspace,
         &wasmer,
         log.as_deref(),
-        None,
-        Mode::Capture,
+        args.filter.as_deref(),
+        mode,
     )?;
 
+    if matches!(mode, Mode::Debug) {
+        return Ok(report);
+    }
+
     let status = results_by_id(&report.results);
-    let baseline_status =
-        if workspace.output_dir.join(".git").exists() && !args.compare_ref.is_empty() {
-            file_json::<BTreeMap<String, Status>>(
-                &workspace.output_dir,
-                &args.compare_ref,
-                "status.json",
-            )?
-            .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
+    let baseline_status = load_baseline_status(&workspace, &args.compare_ref, opts.name)?;
     let (status, flaky_count) = stabilize_changed_tests(
         runner,
         &workspace,
@@ -182,7 +189,8 @@ fn run_with_runner(args: RunArgs, started_at: &str, runner: &dyn LangRunner) -> 
         status,
         flaky_count,
         &report.errors,
-    )
+    )?;
+    Ok(report)
 }
 
 fn stabilize_changed_tests(
@@ -414,6 +422,37 @@ mod tests {
                     (Status::Timeout, 1),
                     (Status::Flaky, 1),
                 ])),
+                errors: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn run_python_debug() {
+        let report = run_with_runner(
+            RunArgs {
+                lang: Lang::Python,
+                filter: Some(
+                    "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later".into(),
+                ),
+                wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_ref: None,
+                timeout: Duration::from_secs(30),
+                compare_ref: "origin/main".into(),
+            },
+            "1970-01-01T00:00:00Z",
+            &PythonRunner::new(),
+        )
+        .expect("run");
+        assert_eq!(
+            report,
+            ExecutionReport {
+                results: vec![TestResult {
+                    id: "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later"
+                        .into(),
+                    status: Status::Pass,
+                }],
+                counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),
                 errors: vec![],
             }
         );
