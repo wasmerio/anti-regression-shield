@@ -181,22 +181,6 @@ impl WasmerRuntime {
         &self.binary
     }
 
-    pub fn compile_package(
-        &self,
-        package: &str,
-        flags: &[String],
-    ) -> std::result::Result<(), ProcessError> {
-        self.run(
-            RunSpec {
-                target: RunTarget::Package(package.to_string()),
-                flags: flags.to_vec(),
-                args: Vec::new(),
-                timeout: None,
-            },
-            ignore_stream,
-        )
-    }
-
     pub fn compile_file(
         &self,
         wasm: &Path,

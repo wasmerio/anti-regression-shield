@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
 use crate::process::{ProcessError, ProcessSpec, ignore_stream, run_process, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
@@ -40,6 +40,7 @@ impl NodeRunner {
         git_repo: "https://github.com/nodejs/node.git",
         git_ref: "v24.13.1",
         wasmer_package: Some("wasmer/edgejs"),
+        wasmer_package_warmup_args: Some(&["-e", "console.log('ok')"]),
         wasmer_flags: &["--experimental-napi"],
         docker_compose: None,
     };
@@ -133,14 +134,20 @@ impl LangRunner for NodeRunner {
         workspace: &Workspace,
         _wasmer: &WasmerRuntime,
         filter: Option<&str>,
-    ) -> Result<Vec<String>> {
+        _mode: Mode,
+    ) -> Result<Vec<TestJob>> {
         if let Some(filter) = filter {
             let direct = Self::test_dir(workspace).join(filter);
             if direct.is_file() {
-                return Ok(vec![filter.to_string()]);
+                tracing::info!(tests = 1, "discovered node test files");
+                return Ok(vec![TestJob {
+                    id: filter.to_string(),
+                    tests: vec![filter.to_string()],
+                }]);
             }
         }
 
+        tracing::info!("discovering node test files");
         let mut tests = BTreeSet::new();
         collect_node_tests(
             &Self::test_dir(workspace),
@@ -148,24 +155,32 @@ impl LangRunner for NodeRunner {
             &mut tests,
         )?;
         let tests: Vec<String> = tests.into_iter().collect();
-        Ok(match filter {
+        let jobs: Vec<TestJob> = match filter {
             None => tests,
             Some(filter) => tests
                 .into_iter()
                 .filter(|id| id == filter || id.contains(filter) || filter.contains(id.as_str()))
                 .collect(),
+        }
+        .into_iter()
+        .map(|id| TestJob {
+            tests: vec![id.clone()],
+            id,
         })
+        .collect();
+        tracing::info!(tests = jobs.len(), "discovered node test files");
+        Ok(jobs)
     }
 
     fn run_test(
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
+        job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
-        self.run_one(workspace, wasmer, id, mode, log)
+        self.run_one(workspace, wasmer, &job.id, mode, log)
     }
 }
 

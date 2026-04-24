@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
 use crate::process::ProcessError;
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
@@ -23,6 +23,7 @@ impl RustRunner {
         git_repo: "https://github.com/wasix-org/rust.git",
         git_ref: "v2025-11-07.1+rust-1.90",
         wasmer_package: None,
+        wasmer_package_warmup_args: None,
         wasmer_flags: &[],
         docker_compose: None,
     };
@@ -326,14 +327,19 @@ impl LangRunner for RustRunner {
         &Self::OPTS
     }
 
-    fn prepare(&self, workspace: &Workspace, wasmer: &WasmerRuntime, ids: &[String]) -> Result<()> {
+    fn prepare(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        jobs: &[TestJob],
+    ) -> Result<()> {
         let mut artifacts = BTreeSet::new();
-        for id in ids {
-            if let Some(artifact) = Self::artifact_path_for_id(workspace, id)? {
+        for job in jobs {
+            if let Some(artifact) = Self::artifact_path_for_id(workspace, &job.id)? {
                 artifacts.insert(artifact);
                 continue;
             }
-            artifacts.insert(self.resolve_case(workspace, wasmer, id)?.artifact_path);
+            artifacts.insert(self.resolve_case(workspace, wasmer, &job.id)?.artifact_path);
         }
         for artifact in artifacts {
             self.compile_artifact(workspace, wasmer, &artifact)?;
@@ -346,54 +352,55 @@ impl LangRunner for RustRunner {
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
         filter: Option<&str>,
-    ) -> Result<Vec<String>> {
+        mode: Mode,
+    ) -> Result<Vec<TestJob>> {
         if let Some(filter) = filter {
-            return Ok(vec![filter.to_string()]);
+            tracing::info!(tests = 1, mode = ?mode, "discovered rust test jobs");
+            return Ok(vec![TestJob {
+                id: filter.to_string(),
+                tests: vec![filter.to_string()],
+            }]);
         }
+        tracing::info!(mode = ?mode, "discovering rust test jobs");
         let results = Self::load_build_results(workspace)?;
-        let mut ids = Vec::new();
+        let mut jobs = Vec::new();
         for result in &results {
             for artifact in Self::executable_paths(result) {
                 let tests = self.list_tests(workspace, wasmer, &artifact)?;
-                for test_name in tests {
-                    ids.push(Self::case_id(
-                        &result.workspace,
-                        &result.package,
-                        &artifact,
-                        &test_name,
-                    ));
-                }
+                let artifact_id = Self::artifact_id(&result.workspace, &result.package, &artifact);
+                let tests = match mode {
+                    Mode::Capture => tests
+                        .into_iter()
+                        .map(|test_name| {
+                            Self::case_id(&result.workspace, &result.package, &artifact, &test_name)
+                        })
+                        .collect(),
+                    Mode::Debug => vec![artifact_id.clone()],
+                };
+                jobs.push(TestJob { id: artifact_id, tests });
             }
         }
-        ids.sort();
-        ids.dedup();
-        Ok(match filter {
-            None => ids,
-            Some(filter) => {
-                let filtered: Vec<String> = ids
-                    .into_iter()
-                    .filter(|id| {
-                        id == filter || id.contains(filter) || filter.contains(id.as_str())
-                    })
-                    .collect();
-                if filtered.is_empty() {
-                    vec![filter.to_string()]
-                } else {
-                    filtered
-                }
-            }
-        })
+        jobs.sort_by(|a, b| a.id.cmp(&b.id));
+        jobs.dedup_by(|a, b| a.id == b.id);
+        let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
+        tracing::info!(
+            artifacts = jobs.len(),
+            tests = total_tests,
+            mode = ?mode,
+            "discovered rust test jobs"
+        );
+        Ok(jobs)
     }
 
     fn run_test(
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
+        job: &TestJob,
         mode: Mode,
         _log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
-        let case = self.resolve_case(workspace, wasmer, id)?;
+        let case = self.resolve_case(workspace, wasmer, &job.id)?;
         let mut stdout = String::new();
         let mut stderr = String::new();
         let mut args = vec!["--test-threads=1".into()];
@@ -443,8 +450,8 @@ impl LangRunner for RustRunner {
 
         let mut parsed = Self::parse_rust_statuses(&stdout);
         parsed.extend(Self::parse_rust_statuses(&stderr));
-        let status = if let Some(test_name) = &case.test_name {
-            parsed
+        if let Some(test_name) = &case.test_name {
+            let status = parsed
                 .into_iter()
                 .find(|(name, _)| name == test_name)
                 .map(|(_, status)| status)
@@ -455,22 +462,39 @@ impl LangRunner for RustRunner {
                     Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
                         Status::Fail
                     }
-                })
-        } else {
-            match result {
-                Ok(()) => Status::Pass,
-                Err(ProcessError::Timeout(_)) => Status::Timeout,
-                Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
-                Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
-                    Status::Fail
+                });
+            return Ok(vec![TestResult {
+                id: job.id.clone(),
+                status,
+            }]);
+        }
+        let fallback = match result {
+            Ok(()) => Status::Fail,
+            Err(ProcessError::Timeout(_)) => Status::Timeout,
+            Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
+            Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => Status::Fail,
+        };
+        let mut by_id = BTreeSet::new();
+        let mut results = Vec::new();
+        for (name, status) in parsed {
+            if let Some(id) = job.tests.iter().find(|id| id.ends_with(&format!("::{name}"))) {
+                if by_id.insert(id.clone()) {
+                    results.push(TestResult {
+                        id: id.clone(),
+                        status,
+                    });
                 }
             }
-        };
-
-        Ok(vec![TestResult {
-            id: id.to_string(),
-            status,
-        }])
+        }
+        for id in &job.tests {
+            if by_id.insert(id.clone()) {
+                results.push(TestResult {
+                    id: id.clone(),
+                    status: fallback,
+                });
+            }
+        }
+        Ok(results)
     }
 }
 

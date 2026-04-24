@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -12,10 +13,10 @@ use crate::langs::node::NodeRunner;
 use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
 use crate::langs::rust::RustRunner;
-use crate::langs::{LangRunner, Mode, Status, TestResult, Workspace};
+use crate::langs::{LangRunner, Mode, Status, TestJob, TestResult, Workspace};
 use crate::reports::{finalize_run, load_baseline_status};
 use crate::run_log::RunLog;
-use crate::runtime::{RuntimeSource, WasmerRuntime};
+use crate::runtime::{RunSpec, RunTarget, RuntimeSource, WasmerRuntime};
 
 const RETEST_TIMEOUT: Duration = Duration::from_secs(300);
 const RETEST_RUNS: usize = 3;
@@ -133,23 +134,8 @@ fn run_with_runner(
         log.clear()?;
     }
 
-    if let Some(package) = opts.wasmer_package {
-        tracing::info!(
-            runner = opts.name,
-            package,
-            "compiling language runtime package"
-        );
-        wasmer
-            .compile_package(
-                package,
-                &opts
-                    .wasmer_flags
-                    .iter()
-                    .map(|flag| (*flag).to_string())
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(|e| anyhow::anyhow!("compile failed: {e:?}"))?;
-    }
+    warmup_package(runner, &wasmer)
+        .map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
 
     let report = execute_tests(
         runner,
@@ -278,6 +264,30 @@ fn now_utc() -> String {
     humantime::format_rfc3339_seconds(SystemTime::now()).to_string()
 }
 
+fn warmup_package(runner: &dyn LangRunner, wasmer: &WasmerRuntime) -> Result<()> {
+    let opts = runner.opts();
+    let (package, args) = match (opts.wasmer_package, opts.wasmer_package_warmup_args) {
+        (Some(package), Some(args)) => (package, args),
+        _ => return Ok(()),
+    };
+    tracing::info!(runner = opts.name, package, "warming up language runtime package");
+    wasmer.run(
+        RunSpec {
+            target: RunTarget::Package(package.to_string()),
+            flags: opts
+                .wasmer_flags
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            timeout: None,
+        },
+        crate::process::ignore_stream,
+    )
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    Ok(())
+}
+
 fn execute_tests(
     runner: &dyn LangRunner,
     workspace: &Workspace,
@@ -286,28 +296,49 @@ fn execute_tests(
     filter: Option<&str>,
     mode: Mode,
 ) -> Result<ExecutionReport> {
-    let ids = runner.discover(workspace, wasmer, filter)?;
-    if ids.is_empty() {
+    let jobs = runner.discover(workspace, wasmer, filter, mode)?;
+    if jobs.is_empty() {
         match filter {
             Some(f) => bail!("no tests matched filter {f:?}"),
             None => bail!("runner discovered 0 tests"),
         }
     }
-    runner.prepare(workspace, wasmer, &ids)?;
-    let run_one = |id: &String| -> Result<Vec<TestResult>, ItemError> {
+    runner.prepare(workspace, wasmer, &jobs)?;
+    let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
+    let completed_tests = AtomicUsize::new(0);
+    let run_one = |job: &TestJob| -> Result<Vec<TestResult>, ItemError> {
         if matches!(mode, Mode::Debug) {
-            println!("\n=== {id} ===");
+            println!("\n=== {} ===", job.id);
         }
-        runner
-            .run_test(workspace, wasmer, id, mode, log)
+        if matches!(mode, Mode::Capture) {
+            tracing::info!(job = job.id, tests = job.tests.len(), "running test job");
+        }
+        let outcome = runner
+            .run_test(workspace, wasmer, job, mode, log)
             .map_err(|e| ItemError {
-                id: id.clone(),
+                id: job.id.clone(),
                 message: format!("{e:#}"),
-            })
+            });
+        if matches!(mode, Mode::Capture) {
+            if let Ok(results) = &outcome {
+                for result in results {
+                    let completed = completed_tests.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::info!(
+                        completed,
+                        total = total_tests,
+                        remaining = total_tests.saturating_sub(completed),
+                        test = result.id,
+                        status = %result.status,
+                        "test result"
+                    );
+                }
+            }
+        }
+        outcome
     };
     let outcomes: Vec<Result<Vec<TestResult>, ItemError>> = match mode {
-        Mode::Capture => ids.par_iter().map(run_one).collect(),
-        Mode::Debug => ids.iter().map(run_one).collect(),
+        Mode::Capture => jobs.par_iter().map(run_one).collect(),
+        Mode::Debug => jobs.iter().map(run_one).collect(),
     };
     let mut results = Vec::new();
     let mut errors = Vec::new();
@@ -337,7 +368,16 @@ fn rerun_status(
     id: &str,
     log: Option<&RunLog>,
 ) -> Result<Status> {
-    let tests = runner.run_test(workspace, wasmer, id, Mode::Debug, log)?;
+    let tests = runner.run_test(
+        workspace,
+        wasmer,
+        &TestJob {
+            id: id.to_string(),
+            tests: vec![id.to_string()],
+        },
+        Mode::Debug,
+        log,
+    )?;
     if tests.len() != 1 {
         bail!("debug rerun for {id} produced {} results", tests.len());
     }
@@ -543,6 +583,31 @@ mod tests {
     }
 
     #[test]
+    fn runner_warmups() {
+        let work_root = std::env::current_dir().expect("cwd").join(".work");
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+            &work_root,
+            Duration::from_secs(30),
+            Arc::new(RunLog::new(work_root.join("runner_warmups.log"))),
+        )
+        .expect("resolve")
+        .runtime;
+        let python = PythonRunner::new();
+        let node = NodeRunner;
+        let php = PhpRunner;
+        let rust = RustRunner;
+        for runner in [
+            &python as &dyn LangRunner,
+            &node as &dyn LangRunner,
+            &php as &dyn LangRunner,
+            &rust as &dyn LangRunner,
+        ] {
+            warmup_package(runner, &wasmer).expect(runner.opts().name);
+        }
+    }
+
+    #[test]
     #[ignore = "local setup helper; run with WASMER_BINARY=/path/to/wasmer cargo test test_dependencies --ignored"]
     fn test_dependencies() {
         let output_dir = std::env::current_dir().expect("cwd");
@@ -571,18 +636,7 @@ mod tests {
             let opts = runner.opts();
             ensure_checkout(&work_root.join(opts.name), opts.git_repo, opts.git_ref)
                 .expect("checkout");
-            if let Some(package) = opts.wasmer_package {
-                wasmer
-                    .compile_package(
-                        package,
-                        &opts
-                            .wasmer_flags
-                            .iter()
-                            .map(|flag| (*flag).to_string())
-                            .collect::<Vec<_>>(),
-                    )
-                    .expect("compile");
-            }
+            warmup_package(runner, &wasmer).expect("warmup");
         }
     }
 }

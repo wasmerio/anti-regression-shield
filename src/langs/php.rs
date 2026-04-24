@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::collections::hash_map::DefaultHasher;
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, WasmerRuntime};
@@ -14,17 +16,25 @@ const GUEST_PHP_BIN: &str = "/bin/php";
 pub struct PhpRunner;
 
 impl PhpRunner {
+    const BATCH_SIZE: usize = 50;
+
     pub const OPTS: RunnerOpts = RunnerOpts {
         name: "php",
         git_repo: "https://github.com/wasix-org/php.git",
         git_ref: "6dd6dd1c7e409b8e9dcba8a8d6f9b7b5f944cc9e",
         wasmer_package: Some("php/php-32"),
+        wasmer_package_warmup_args: Some(&["-r", "echo \"ok\\n\";"]),
         wasmer_flags: &[],
         docker_compose: None,
     };
 
-    fn result_file(workspace: &Workspace) -> PathBuf {
-        workspace.work_dir.join("php-results.tsv")
+    fn result_file(workspace: &Workspace, job: &TestJob) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        job.id.hash(&mut hasher);
+        job.tests.hash(&mut hasher);
+        workspace
+            .work_dir
+            .join(format!("php-results-{:016x}.tsv", hasher.finish()))
     }
 
     fn run_tests_path(workspace: &Workspace) -> PathBuf {
@@ -73,20 +83,36 @@ impl PhpRunner {
             .collect())
     }
 
-    fn run_one(
-        &self,
-        workspace: &Workspace,
-        wasmer: &WasmerRuntime,
-        id: &str,
-        mode: Mode,
-    ) -> Result<Vec<TestResult>> {
-        let test_path = Self::test_path(workspace, id);
-        if !test_path.is_file() {
-            bail!("php test not found: {}", test_path.display());
+    fn run_one(&self, workspace: &Workspace, wasmer: &WasmerRuntime, job: &TestJob, mode: Mode) -> Result<Vec<TestResult>> {
+        let test_paths: Vec<PathBuf> = job
+            .tests
+            .iter()
+            .map(|id| Self::test_path(workspace, id))
+            .collect();
+        for test_path in &test_paths {
+            if !test_path.is_file() {
+                bail!("php test not found: {}", test_path.display());
+            }
         }
         fs::create_dir_all(&workspace.work_dir)?;
-        let result_file = Self::result_file(workspace);
+        let result_file = Self::result_file(workspace, job);
         let _ = fs::remove_file(&result_file);
+        let mut args = vec![
+            "-d".into(),
+            "error_reporting=E_ALL & ~E_DEPRECATED".into(),
+            Self::run_tests_path(workspace).display().to_string(),
+            "-q".into(),
+            "-n".into(),
+            "-p".into(),
+            GUEST_PHP_BIN.into(),
+            "-W".into(),
+            result_file.display().to_string(),
+        ];
+        args.extend(
+            test_paths
+                .iter()
+                .map(|path| path.display().to_string()),
+        );
 
         let result = wasmer.run(
             RunSpec {
@@ -94,18 +120,7 @@ impl PhpRunner {
                     Self::OPTS.wasmer_package.expect("php package").to_string(),
                 ),
                 flags: Self::volume_flags(workspace),
-                args: vec![
-                    "-d".into(),
-                    "error_reporting=E_ALL & ~E_DEPRECATED".into(),
-                    Self::run_tests_path(workspace).display().to_string(),
-                    "-q".into(),
-                    "-n".into(),
-                    "-p".into(),
-                    GUEST_PHP_BIN.into(),
-                    "-W".into(),
-                    result_file.display().to_string(),
-                    test_path.display().to_string(),
-                ],
+                args,
                 timeout: None,
             },
             |stream, line| {
@@ -116,21 +131,37 @@ impl PhpRunner {
             },
         );
 
-        let mut results = Self::parse_results(&workspace.checkout, &result_file)?;
-        if results.is_empty() {
-            results.push(TestResult {
-                id: id.to_string(),
-                status: match result {
-                    Ok(()) => Status::Pass,
-                    Err(ProcessError::Timeout(_)) => Status::Timeout,
-                    Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
-                        Status::Fail
-                    }
-                    Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
-                },
-            });
+        let parsed = Self::parse_results(&workspace.checkout, &result_file)?;
+        let fallback = match result {
+            Ok(()) => Status::Fail,
+            Err(ProcessError::Timeout(_)) => Status::Timeout,
+            Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => Status::Fail,
+            Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
+        };
+        let mut by_id = BTreeMap::new();
+        for result in parsed {
+            by_id.insert(result.id, result.status);
         }
-        Ok(results)
+        Ok(job
+            .tests
+            .iter()
+            .cloned()
+            .chain(by_id.keys().filter(|id| !job.tests.contains(*id)).cloned())
+            .map(|id| TestResult {
+                status: by_id.get(&id).copied().unwrap_or(fallback),
+                id,
+            })
+            .collect())
+    }
+
+    fn batch_jobs(ids: Vec<String>) -> Vec<TestJob> {
+        ids.chunks(Self::BATCH_SIZE)
+            .enumerate()
+            .map(|(index, chunk)| TestJob {
+                id: format!("php-batch-{index:04}"),
+                tests: chunk.to_vec(),
+            })
+            .collect()
     }
 }
 
@@ -143,7 +174,7 @@ impl LangRunner for PhpRunner {
         &self,
         workspace: &Workspace,
         _wasmer: &WasmerRuntime,
-        _ids: &[String],
+        _jobs: &[TestJob],
     ) -> Result<()> {
         patch_php_runtests_worker_putenv(&workspace.checkout)?;
         patch_php_runtests_guest_exec(&workspace.checkout)
@@ -154,28 +185,37 @@ impl LangRunner for PhpRunner {
         workspace: &Workspace,
         _wasmer: &WasmerRuntime,
         filter: Option<&str>,
-    ) -> Result<Vec<String>> {
+        _mode: Mode,
+    ) -> Result<Vec<TestJob>> {
+        tracing::info!("discovering php tests");
         let mut tests = Vec::new();
         collect_phpt(&workspace.checkout, &workspace.checkout, &mut tests)?;
         tests.sort();
-        Ok(match filter {
-            None => tests,
+        let jobs: Vec<TestJob> = match filter {
+            None => Self::batch_jobs(tests),
             Some(filter) => tests
                 .into_iter()
                 .filter(|id| id == filter || id.contains(filter) || filter.contains(id.as_str()))
+                .map(|id| TestJob {
+                    tests: vec![id.clone()],
+                    id,
+                })
                 .collect(),
-        })
+        };
+        let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
+        tracing::info!(jobs = jobs.len(), tests = total_tests, "discovered php tests");
+        Ok(jobs)
     }
 
     fn run_test(
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
+        job: &TestJob,
         mode: Mode,
         _log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
-        self.run_one(workspace, wasmer, id, mode)
+        self.run_one(workspace, wasmer, job, mode)
     }
 }
 
@@ -205,7 +245,17 @@ fn map_php_status(status: &str) -> Status {
 }
 
 fn normalize_test_name(source_root: &Path, name: &str) -> String {
-    let path = Path::new(name.trim());
+    let name = name.trim();
+    let name = if let Some((_, redirected)) = name.split_once(": ") {
+        if name.starts_with("# ") {
+            redirected
+        } else {
+            name
+        }
+    } else {
+        name
+    };
+    let path = Path::new(name);
     if let Ok(rel) = path.strip_prefix(source_root) {
         return rel.to_string_lossy().replace('\\', "/");
     }
@@ -403,6 +453,27 @@ function compute_summary(): void"#,
     );
     replace_if_present(
         &mut text,
+        r#"    public function checkSkip(string $php, string $code, string $checkFile, string $tempFile, array $env): string"#,
+        r#"    public function checkSkip($php, string $code, string $checkFile, string $tempFile, array $env): string"#,
+    );
+    replace_if_present(
+        &mut text,
+        r#"    public function getExtensions(string $php): array
+    {
+        if (isset($this->extensions[$php])) {
+            $this->extHits++;
+            return $this->extensions[$php];
+        }"#,
+        r#"    public function getExtensions($php): array
+    {
+        $php_key = compat_command_key($php);
+        if (isset($this->extensions[$php_key])) {
+            $this->extHits++;
+            return $this->extensions[$php_key];
+        }"#,
+    );
+    replace_if_present(
+        &mut text,
         r#"        $extDir = shell_exec("$php -d display_errors=0 -r \"echo ini_get('extension_dir');\"");"#,
         r#"        $extDir = compat_shell_exec(array_merge(compat_command($php), ['-d', 'display_errors=0', '-r', 'echo ini_get(\'extension_dir\');']));"#,
     );
@@ -410,6 +481,15 @@ function compute_summary(): void"#,
         &mut text,
         r#"        $extensionsNames = explode(",", shell_exec("$php -d display_errors=0 -r \"echo implode(',', get_loaded_extensions());\""));"#,
         r#"        $extensionsNames = explode(",", (string) compat_shell_exec(array_merge(compat_command($php), ['-d', 'display_errors=0', '-r', 'echo implode(\',\', get_loaded_extensions());'])));"#,
+    );
+    replace_if_present(
+        &mut text,
+        r#"        $result = [$extDir, $extensions];
+        $this->extensions[$php] = $result;
+        $this->extMisses++;"#,
+        r#"        $result = [$extDir, $extensions];
+        $this->extensions[$php_key] = $result;
+        $this->extMisses++;"#,
     );
     replace_if_present(
         &mut text,
@@ -500,6 +580,11 @@ function compute_summary(): void"#,
         &mut text,
         "COMMAND $cmd\n",
         "COMMAND \" . compat_command_display($cmd) . \"\n",
+    );
+    replace_if_present(
+        &mut text,
+        r#"    $orig_cmd = $cmd;"#,
+        r#"    $orig_cmd = compat_command_display($cmd);"#,
     );
     replace_if_present(
         &mut text,

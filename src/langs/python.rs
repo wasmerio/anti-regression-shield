@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use rayon::prelude::*;
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
@@ -43,7 +45,6 @@ raise SystemExit(0 if result.wasSuccessful() else 1)
 "#;
 
 const DISCOVER_CASES: &str = r#"import sys,unittest
-job = sys.argv[1]
 def walk(suite):
     for item in suite:
         if isinstance(item, unittest.TestSuite):
@@ -51,14 +52,15 @@ def walk(suite):
         else:
             test_id = item.id()
             if not test_id.startswith("unittest.loader."):
-                print(test_id, flush=True)
-try:
-    suite = unittest.defaultTestLoader.loadTestsFromName(job)
-except unittest.SkipTest:
-    print(job, flush=True)
-    raise SystemExit(0)
-for _ in walk(suite):
-    pass
+                print(job, test_id, sep="\t", flush=True)
+for job in sys.argv[1:]:
+    try:
+        suite = unittest.defaultTestLoader.loadTestsFromName(job)
+    except unittest.SkipTest:
+        print(job, flush=True)
+        continue
+    for _ in walk(suite):
+        pass
 "#;
 
 const GUEST_TEST_DIR_CODE: &str = "import sys; print(f'/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/test')";
@@ -75,6 +77,7 @@ impl PythonRunner {
         // TODO: I guess we could infer git_ref from the package itself
         git_ref: "e3245fc95e570ac823deb50689041bc1f81d6b27",
         wasmer_package: Some("python/python"),
+        wasmer_package_warmup_args: Some(&["-c", "print('ok')"]),
         wasmer_flags: &[],
         docker_compose: None,
     };
@@ -114,9 +117,14 @@ impl PythonRunner {
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
-    ) -> Result<Vec<String>> {
+        ids: &[String],
+    ) -> Result<Vec<TestJob>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
         let mut stdout = String::new();
+        let mut args = vec!["-c".into(), DISCOVER_CASES.into()];
+        args.extend(ids.iter().cloned());
         let result = wasmer.run(
             RunSpec {
                 target: RunTarget::Package(
@@ -126,7 +134,7 @@ impl PythonRunner {
                         .to_string(),
                 ),
                 flags: vec!["--volume".into(), self.volume_flag(workspace, wasmer)?],
-                args: vec!["-c".into(), DISCOVER_CASES.into(), id.into()],
+                args,
                 timeout: Some(DISCOVER_TIMEOUT),
             },
             |stream, line| {
@@ -138,34 +146,63 @@ impl PythonRunner {
             },
         );
         if matches!(result, Err(ProcessError::Timeout(_))) {
-            return Ok(vec![id.to_string()]);
+            return Ok(ids
+                .iter()
+                .cloned()
+                .map(|id| TestJob {
+                    tests: vec![id.clone()],
+                    id,
+                })
+                .collect());
         }
-        let mut names: Vec<String> = stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with("unittest.loader."))
-            .map(str::to_string)
-            .collect();
-        names.sort();
-        names.dedup();
+        let mut names = BTreeMap::<String, Vec<String>>::new();
+        for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            if line.starts_with("unittest.loader.") {
+                continue;
+            }
+            if let Some((module, test_id)) = line.split_once('\t') {
+                names
+                    .entry(module.to_string())
+                    .or_default()
+                    .push(test_id.to_string());
+            } else {
+                names
+                    .entry(line.to_string())
+                    .or_default()
+                    .push(line.to_string());
+            }
+        }
         match result {
             Ok(()) => {}
             Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
                 if names.is_empty() {
-                    names.push(id.to_string());
+                    for id in ids {
+                        names.entry(id.clone()).or_default().push(id.clone());
+                    }
                 }
             }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
             Err(ProcessError::Timeout(_)) => unreachable!(),
         }
-        Ok(names)
+        Ok(ids
+            .iter()
+            .map(|id| {
+                let mut tests = names.remove(id).unwrap_or_else(|| vec![id.clone()]);
+                tests.sort();
+                tests.dedup();
+                TestJob {
+                    id: id.clone(),
+                    tests,
+                }
+            })
+            .collect())
     }
 
     pub fn run_module_capture(
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
+        job: &TestJob,
         _log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
         let mut parser = PythonProtocol::default();
@@ -178,7 +215,7 @@ impl PythonRunner {
                         .to_string(),
                 ),
                 flags: vec!["--volume".into(), self.volume_flag(workspace, wasmer)?],
-                args: vec!["-c".into(), DISCOVER_AND_RUN.into(), id.into()],
+                args: vec!["-c".into(), DISCOVER_AND_RUN.into(), job.id.clone()],
                 timeout: None,
             },
             |stream, line| {
@@ -193,7 +230,12 @@ impl PythonRunner {
             Err(ProcessError::Timeout(_)) => {}
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message.clone())),
         }
-        Ok(parser.finish(matches!(result, Err(ProcessError::Timeout(_))), id))
+        Ok(reconcile_module_results(
+            &job.id,
+            &job.tests,
+            parser.finish(matches!(result, Err(ProcessError::Timeout(_))), &job.id),
+            matches!(result, Err(ProcessError::Timeout(_))),
+        ))
     }
 }
 
@@ -201,6 +243,13 @@ impl Default for PythonRunner {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn worker_count(total: usize) -> usize {
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    total.max(1).min(cpus + 2)
 }
 
 impl LangRunner for PythonRunner {
@@ -212,7 +261,7 @@ impl LangRunner for PythonRunner {
         &self,
         workspace: &Workspace,
         _wasmer: &WasmerRuntime,
-        _ids: &[String],
+        _jobs: &[TestJob],
     ) -> Result<()> {
         patch_faulthandler_workarounds(&Self::host_test_dir(workspace))
             .context("applying cpython test patches")
@@ -223,7 +272,8 @@ impl LangRunner for PythonRunner {
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
         filter: Option<&str>,
-    ) -> Result<Vec<String>> {
+        mode: Mode,
+    ) -> Result<Vec<TestJob>> {
         let testdir = Self::host_test_dir(workspace);
         let modules: Vec<String> = std::fs::read_dir(&testdir)
             .with_context(|| format!("reading {}", testdir.display()))?
@@ -241,7 +291,10 @@ impl LangRunner for PythonRunner {
                 if let Some((prefix_end, _)) = f.match_indices('.').nth(1) {
                     let prefix = &f[..prefix_end];
                     if modules.iter().any(|m| m == prefix) {
-                        return Ok(vec![f.to_string()]);
+                        return Ok(vec![TestJob {
+                            id: f.to_string(),
+                            tests: vec![f.to_string()],
+                        }]);
                     }
                 }
                 modules
@@ -250,12 +303,73 @@ impl LangRunner for PythonRunner {
                     .collect()
             }
         };
+        let workers = worker_count(selected_modules.len());
+        tracing::info!(
+            modules = selected_modules.len(),
+            workers,
+            mode = ?mode,
+            "discovering python tests"
+        );
+        let completed = AtomicUsize::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .map_err(|e| anyhow!("build python discovery pool: {e}"))?;
+        let discovered: Vec<Result<Vec<TestJob>>> = pool.install(|| {
+            selected_modules
+                .par_iter()
+                .map(|module| {
+                    let result = self.discover_cases(workspace, wasmer, std::slice::from_ref(module));
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if done % 25 == 0 || done == selected_modules.len() {
+                        tracing::info!(
+                            completed = done,
+                            total = selected_modules.len(),
+                            "python discovery progress"
+                        );
+                    }
+                    result
+                })
+                .collect()
+        });
         let mut jobs = Vec::new();
-        for module in selected_modules {
-            jobs.extend(self.discover_cases(workspace, wasmer, &module)?);
+        for result in discovered {
+            jobs.extend(result?);
         }
-        jobs.sort();
-        jobs.dedup();
+        jobs.sort_by(|a, b| a.id.cmp(&b.id));
+        jobs.dedup_by(|a, b| a.id == b.id);
+        if matches!(mode, Mode::Debug) {
+            let filter = filter.expect("debug filter");
+            let mut tests: Vec<TestJob> = jobs
+                .into_iter()
+                .flat_map(|job| {
+                    job.tests.into_iter().filter_map(move |test| {
+                        (test == filter || test.contains(filter) || filter.contains(test.as_str()))
+                            .then(|| TestJob {
+                                id: test.clone(),
+                                tests: vec![test],
+                            })
+                    })
+                })
+                .collect();
+            tests.sort_by(|a, b| a.id.cmp(&b.id));
+            tests.dedup_by(|a, b| a.id == b.id);
+            if tests.is_empty() {
+                return Ok(vec![TestJob {
+                    id: filter.to_string(),
+                    tests: vec![filter.to_string()],
+                }]);
+            }
+            tracing::info!(tests = tests.len(), "discovered python debug tests");
+            return Ok(tests);
+        }
+        let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
+        tracing::info!(
+            modules = jobs.len(),
+            tests = total_tests,
+            workers,
+            "discovered python module jobs"
+        );
         Ok(jobs)
     }
 
@@ -263,12 +377,12 @@ impl LangRunner for PythonRunner {
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
+        job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
         Ok(match mode {
-            Mode::Capture => self.run_module_capture(workspace, wasmer, id, log)?,
+            Mode::Capture => self.run_module_capture(workspace, wasmer, job, log)?,
             Mode::Debug => {
                 let result = wasmer.run(
                     RunSpec {
@@ -279,7 +393,7 @@ impl LangRunner for PythonRunner {
                                 .to_string(),
                         ),
                         flags: vec!["--volume".into(), self.volume_flag(workspace, wasmer)?],
-                        args: vec!["-m".into(), "unittest".into(), "-v".into(), id.into()],
+                        args: vec!["-m".into(), "unittest".into(), "-v".into(), job.id.clone()],
                         timeout: None,
                     },
                     write_stream,
@@ -293,7 +407,7 @@ impl LangRunner for PythonRunner {
                     Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
                 };
                 vec![TestResult {
-                    id: id.to_string(),
+                    id: job.id.clone(),
                     status,
                 }]
             }

@@ -21,6 +21,8 @@ pub struct RunnerOpts {
     pub git_ref: &'static str,
     /// Wasmer package name, ex: python/python
     pub wasmer_package: Option<&'static str>,
+    /// Wasmer package warmup args, ex: -c print('ok')
+    pub wasmer_package_warmup_args: Option<&'static [&'static str]>,
     /// Wasmer flags, ex: --experimental-napi
     pub wasmer_flags: &'static [&'static str],
     /// Optional docker compose file, ex: docker-compose.yml
@@ -31,6 +33,12 @@ pub struct Workspace {
     pub output_dir: PathBuf,
     pub checkout: PathBuf,
     pub work_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestJob {
+    pub id: String,
+    pub tests: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,7 +82,7 @@ pub trait LangRunner: Send + Sync {
         &self,
         _workspace: &Workspace,
         _wasmer: &WasmerRuntime,
-        _ids: &[String],
+        _jobs: &[TestJob],
     ) -> Result<()> {
         Ok(())
     }
@@ -83,12 +91,13 @@ pub trait LangRunner: Send + Sync {
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
         filter: Option<&str>,
-    ) -> Result<Vec<String>>;
+        mode: Mode,
+    ) -> Result<Vec<TestJob>>;
     fn run_test(
         &self,
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
-        id: &str,
+        job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>>;
@@ -98,7 +107,7 @@ pub trait LangRunner: Send + Sync {
 pub mod tests {
     use anyhow::Result;
 
-    use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+    use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
     use crate::run_log::RunLog;
     use crate::runtime::WasmerRuntime;
 
@@ -110,6 +119,7 @@ pub mod tests {
             git_repo: "https://example.invalid/mock.git",
             git_ref: "HEAD",
             wasmer_package: Some("mock/mock"),
+            wasmer_package_warmup_args: Some(&["-c", "print('ok')"]),
             wasmer_flags: &[],
             docker_compose: None,
         };
@@ -125,7 +135,8 @@ pub mod tests {
             _workspace: &Workspace,
             _wasmer: &WasmerRuntime,
             filter: Option<&str>,
-        ) -> Result<Vec<String>> {
+            _mode: Mode,
+        ) -> Result<Vec<TestJob>> {
             let all = [
                 "pass_a",
                 "pass_b",
@@ -137,7 +148,10 @@ pub mod tests {
             Ok(all
                 .iter()
                 .filter(|id| filter.is_none_or(|f| id.contains(f)))
-                .map(|id| (*id).to_string())
+                .map(|id| TestJob {
+                    id: (*id).to_string(),
+                    tests: vec![(*id).to_string()],
+                })
                 .collect())
         }
 
@@ -145,11 +159,11 @@ pub mod tests {
             &self,
             _workspace: &Workspace,
             _wasmer: &WasmerRuntime,
-            id: &str,
+            job: &TestJob,
             _mode: Mode,
             _log: Option<&RunLog>,
         ) -> Result<Vec<TestResult>> {
-            let status = match id.split('_').next().unwrap_or("") {
+            let status = match job.id.split('_').next().unwrap_or("") {
                 "fail" => Status::Fail,
                 "skip" => Status::Skip,
                 "timeout" => Status::Timeout,
@@ -157,7 +171,7 @@ pub mod tests {
                 _ => Status::Pass,
             };
             Ok(vec![TestResult {
-                id: id.to_string(),
+                id: job.id.clone(),
                 status,
             }])
         }
