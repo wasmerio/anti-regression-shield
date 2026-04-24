@@ -1,0 +1,27 @@
+name: compat-nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  suite:
+    uses: ./.github/workflows/suite.yml
+    with:
+      target_repo: wasmerio/wasmer
+      target_sha: main
+
+  publish:
+    needs: suite
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: compat-*
+          merge-multiple: true
+      - run: >
+          cargo run --quiet -- publish --branch main

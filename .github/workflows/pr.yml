@@ -1,0 +1,42 @@
+name: compat-pr
+run-name: compat-pr [${{ inputs.target_sha }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        required: true
+      target_sha:
+        required: true
+      comment_pr_number:
+        required: true
+
+jobs:
+  suite:
+    uses: ./.github/workflows/suite.yml
+    with:
+      target_repo: ${{ inputs.target_repo }}
+      target_sha: ${{ inputs.target_sha }}
+
+  summary:
+    if: ${{ always() }}
+    needs: suite
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: compat-*
+          merge-multiple: true
+      - run: >
+          cargo run --quiet -- pr-comment
+          --target-repo "${{ inputs.target_repo }}"
+          --target-sha "${{ inputs.target_sha }}"
+          --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          --comment-repo "wasmerio/wasmer"
+          --comment-pr-number "${{ inputs.comment_pr_number }}"
+          --github-token "${{ secrets.WASMER_REPO_GH_TOKEN }}"
