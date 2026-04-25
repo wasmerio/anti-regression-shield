@@ -119,7 +119,7 @@ fn collect_language_verdict(
 
     let improvements = changed_tests(&baseline_status, &status, is_improvement);
     let regressions = changed_tests(&baseline_status, &status, is_regression);
-    let crash_example = first_new_crash(&metadata, &baseline_metadata);
+    let crash_example = first_new_crash(config, &metadata, &baseline_metadata);
 
     Ok(LanguageVerdict {
         config,
@@ -209,13 +209,20 @@ fn crash_count(metadata: &RunMetadata) -> usize {
     metadata.crashes.len()
 }
 
-fn first_new_crash(candidate: &RunMetadata, baseline: &RunMetadata) -> Option<CrashExample> {
+fn first_new_crash(
+    config: LangConfig,
+    candidate: &RunMetadata,
+    baseline: &RunMetadata,
+) -> Option<CrashExample> {
     candidate
         .crashes
         .iter()
         .find(|(job_id, message)| baseline.crashes.get(*job_id) != Some(*message))
-        .map(|(_job_id, message)| CrashExample {
-            repro_command: None,
+        .map(|(job_id, message)| CrashExample {
+            repro_command: Some(format!(
+                "shield run --lang {} --wasmer [WASMER BINARY] {}",
+                config.name, job_id
+            )),
             test_source: None,
             output: Some(message.clone()),
         })

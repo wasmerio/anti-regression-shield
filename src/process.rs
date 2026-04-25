@@ -484,6 +484,24 @@ mod tests {
     }
 
     #[test]
+    fn process_runtime_trap_capture_uses_stderr_only() {
+        let err = run_process(
+            sh("printf \"RuntimeError: out of bounds memory access\\n    at <unnamed> (<module>[9015]:0xffffffff)\\n\" 1>&2; printf \"TEST 1/1\\r\\033[1;32mPASS\\033[0m noisy\\n\"; exit 1"),
+            |_, _| Ok(()),
+        )
+        .expect_err("runtime trap");
+        match err {
+            ProcessError::RustCrash(text) => {
+                assert_eq!(
+                    text,
+                    "RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn process_ignores_stdout_runtime_error_text() {
         let err = run_process(
             sh("printf \"RuntimeError: out of bounds memory access\\n\"; exit 1"),

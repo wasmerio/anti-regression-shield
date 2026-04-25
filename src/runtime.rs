@@ -18,7 +18,7 @@ use crate::reports::WasmerIdentity;
 use crate::run_log::RunLog;
 
 const WASMER_REPO: &str = "https://github.com/wasmerio/wasmer.git";
-const COMPILE_TIMEOUT: Duration = Duration::from_secs(600);
+const COMPILE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 pub const WASMER_REGISTRY: &str = "wasmer.io";
 // TODO: Re-enable prebuilt main Wasmer once the temporary EdgeJS N-API patch is upstreamed.
 const USE_PREBUILT_MAIN_WASMER: bool = false;

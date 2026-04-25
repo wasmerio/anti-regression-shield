@@ -375,7 +375,7 @@ fn execute_tests(
                     .collect(),
                 Some(ItemError {
                     id: job.id.clone(),
-                    message: job_error_message(runner, wasmer, job, &e),
+                    message: job_error_message(job, &e),
                 }),
             ),
         };
@@ -431,18 +431,10 @@ fn execute_tests(
 }
 
 fn job_error_message(
-    runner: &dyn LangRunner,
-    wasmer: &WasmerRuntime,
     job: &TestJob,
     error: &anyhow::Error,
 ) -> String {
-    let mut message = format!(
-        "{error:#}\njob: {}\nrepro: cargo run -- run --lang {} --wasmer {} {}\ntests:",
-        job.id,
-        runner.opts().name,
-        wasmer.binary_path().display(),
-        job.id,
-    );
+    let mut message = format!("{error:#}\njob: {}\ntests:", job.id);
     for test in &job.tests {
         message.push_str("\n- ");
         message.push_str(test);
@@ -632,7 +624,6 @@ mod tests {
         .expect("parse metadata");
         let error = metadata["crashes"]["panic_g"].as_str().expect("job crash");
         assert!(error.contains("crash: fatal runtime error: stack overflow, aborting"));
-        assert!(error.contains("repro: cargo run -- run --lang mock"));
         assert!(error.contains("- panic_g"));
     }
 
