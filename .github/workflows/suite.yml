@@ -32,7 +32,8 @@ jobs:
           echo LLVM_SYS_221_PREFIX=/opt/llvm-22 >> "$GITHUB_ENV"
       - if: matrix.lang == 'rust'
         run: |
-          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wasix-org/cargo-wasix/releases/download/v0.1.23/cargo-wasix-installer.sh | sh
+          cargo install cargo-wasix --version 0.1.26 --locked
+          export PATH="$HOME/.cargo/bin:$PATH"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           wasix_toolchain="$(cargo run --quiet -- run --lang rust --version)"
           test -n "$wasix_toolchain"
