@@ -211,7 +211,7 @@ fn handle_line<F>(
 where
     F: FnMut(Stream, &str) -> Result<()>,
 {
-    if state.panic_capture.is_none() && starts_rust_panic_capture(&line) {
+    if state.panic_capture.is_none() && starts_panic_capture(stream, &line) {
         state.panic_capture = Some(PanicCapture {
             stream,
             text: String::new(),
@@ -261,6 +261,11 @@ fn is_tracing_json_line(line: &str) -> bool {
     line.starts_with("{\"timestamp\"") && line.contains("\"level\"")
 }
 
+fn starts_panic_capture(stream: Stream, line: &str) -> bool {
+    starts_rust_panic_capture(line)
+        || (stream == Stream::Stderr && starts_wasm_runtime_trap_capture(line))
+}
+
 fn starts_rust_panic_capture(line: &str) -> bool {
     // TODO: Not super bulletproof way to detect panics, maybe there is a better way?
     line.contains("panicked at")
@@ -269,6 +274,10 @@ fn starts_rust_panic_capture(line: &str) -> bool {
         || line.contains("thread caused non-unwinding panic")
         || line.contains("memory allocation of ")
         || line.contains("thread panicked while processing panic")
+}
+
+fn starts_wasm_runtime_trap_capture(line: &str) -> bool {
+    line.starts_with("RuntimeError: ")
 }
 
 fn spawn_reader<R: std::io::Read + Send + 'static>(
@@ -454,6 +463,38 @@ mod tests {
                 assert!(text.contains("has overflowed its stack"));
                 assert!(text.contains("fatal runtime error: stack overflow"));
             }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_detects_wasm_runtime_trap() {
+        let err = run_process(
+            sh("printf \"RuntimeError: out of bounds memory access\\n    at <unnamed> (<module>[9015]:0xffffffff)\\n\" 1>&2; exit 1"),
+            |_, _| Ok(()),
+        )
+        .expect_err("runtime trap");
+        match err {
+            ProcessError::RustPanic(text) => {
+                assert!(text.contains("RuntimeError: out of bounds memory access"));
+                assert!(text.contains("<module>[9015]"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_ignores_stdout_runtime_error_text() {
+        let err = run_process(
+            sh("printf \"RuntimeError: out of bounds memory access\\n\"; exit 1"),
+            |_, _| Ok(()),
+        )
+        .expect_err("exit");
+        match err {
+            ProcessError::AbnormalExit(message) => assert!(
+                message.contains("1"),
+                "expected exit status in message, got {message:?}"
+            ),
             other => panic!("unexpected error: {other:?}"),
         }
     }
