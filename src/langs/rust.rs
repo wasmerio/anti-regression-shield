@@ -1942,9 +1942,9 @@ fn rust_results(
             return Err(anyhow!(ProcessError::AbnormalExit(message)));
         }
         Err(ProcessError::AbnormalExit(_)) => Status::Fail,
-        Err(ProcessError::RustPanic(message)) => {
+        Err(ProcessError::RustCrash(message)) => {
             if parsed.is_empty() {
-                return Err(anyhow!(ProcessError::RustPanic(message)));
+                return Err(anyhow!(ProcessError::RustCrash(message)));
             }
             Status::Fail
         }
@@ -2004,11 +2004,22 @@ fn artifact_path_from_job(workspace: &Workspace, id: &str) -> Result<PathBuf> {
         .find(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(artifact))
         .cloned()
         .or_else(|| {
+            matches
+                .iter()
+                .find(|path| {
+                    path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(strip_cargo_hash)
+                        == Some(artifact_prefix)
+                })
+                .cloned()
+        })
+        .or_else(|| {
             matches.into_iter().find(|path| {
                 path.file_stem()
                     .and_then(|stem| stem.to_str())
                     .map(strip_cargo_hash)
-                    == Some(artifact_prefix)
+                    == Some(package)
             })
         })
         .ok_or_else(|| anyhow!("rust artifact {id:?} missing under {}", deps.display()))
@@ -2294,6 +2305,35 @@ mod tests {
         let wasm = deps.join("rustc_ast_lowering-2222222222222222.wasm");
         fs::write(&wasm, b"wasm").unwrap();
         fs::write(deps.join("rustc_ast_passes-3333333333333333.wasm"), b"wasm").unwrap();
+        let workspace = Workspace {
+            output_dir: dir.path().join("out"),
+            checkout,
+            work_dir: dir.path().join("work"),
+        };
+
+        assert_eq!(
+            artifact_path_from_job(
+                &workspace,
+                "root::rustc_ast::rustc_ast_lowering-1111111111111111"
+            )
+            .unwrap(),
+            wasm
+        );
+    }
+
+    #[test]
+    fn artifact_path_falls_back_to_package_artifact_for_stale_split_target() {
+        let dir = TempDir::new("rust-artifact-package-cache").unwrap();
+        let checkout = dir.path().join("checkout");
+        let deps = checkout
+            .join("target")
+            .join(TARGET)
+            .join("debug")
+            .join("deps");
+        fs::create_dir_all(&deps).unwrap();
+        let wasm = deps.join("rustc_ast-2222222222222222.wasm");
+        fs::write(&wasm, b"wasm").unwrap();
+        fs::write(deps.join("rustc_ast_ir-3333333333333333.wasm"), b"wasm").unwrap();
         let workspace = Workspace {
             output_dir: dir.path().join("out"),
             checkout,
