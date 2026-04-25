@@ -1,11 +1,10 @@
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
 
-use crate::reports::load_language_summary;
+use crate::verdict::build_verdict;
 
 #[derive(Args)]
 pub struct PrCommentArgs {
@@ -37,69 +36,22 @@ pub struct PrCommentArgs {
 
 pub fn pr_comment(args: PrCommentArgs) -> Result<()> {
     tracing::info!(repo = %args.comment_repo, pr = %args.comment_pr_number, "pr-comment");
-    let langs = ["python", "node", "php", "rust"]
-        .into_iter()
-        .map(|lang| load_language_summary(Path::new("."), lang, &args.target_sha))
-        .collect::<Result<Vec<_>>>()?;
-    let (body, ok) = build_pr_comment(
-        &args.target_repo,
+    let verdict = build_verdict(
+        Path::new("."),
         &args.target_sha,
         &args.run_url,
         &args.results_branch,
         &args.results_commit,
-        &langs,
-    );
-    let body_path = write_body(&body)?;
+    )?;
+    let body_path = write_body(&verdict.body)?;
     post_comment(
         &args.comment_repo,
         &args.comment_pr_number,
         &args.github_token,
         &body_path,
     )?;
-    print!("{body}");
-    if ok {
-        Ok(())
-    } else {
-        bail!("compat-tests detected missing artifacts or SHA mismatches")
-    }
-}
-
-fn build_pr_comment(
-    target_repo: &str,
-    target_sha: &str,
-    run_url: &str,
-    results_branch: &str,
-    results_commit: &str,
-    languages: &[(&'static str, String, bool)],
-) -> (String, bool) {
-    let mut body = String::new();
-    let ok = languages.iter().all(|(_, _, ok)| *ok);
-    let status = if ok { "OK" } else { "ERROR" };
-
-    let _ = writeln!(body, "compat-tests: {status}");
-    let _ = writeln!(body);
-    let _ = writeln!(body, "- Wasmer repo: `{target_repo}`");
-    let _ = writeln!(body, "- Wasmer SHA: `{target_sha}`");
-    let _ = writeln!(body, "- Workflow: {run_url}");
-    if !results_commit.is_empty() {
-        let _ = writeln!(
-            body,
-            "- Results commit: https://github.com/wasmerio/compat-tests/commit/{results_commit}"
-        );
-    }
-    if !results_branch.is_empty() {
-        let _ = writeln!(
-            body,
-            "- Results branch: https://github.com/wasmerio/compat-tests/tree/{results_branch}"
-        );
-    }
-    let _ = writeln!(body);
-    let _ = writeln!(body, "Languages:");
-    for (name, summary, _) in languages {
-        let _ = writeln!(body, "- `{name}`: {summary}");
-    }
-
-    (body, ok)
+    print!("{}", verdict.body);
+    Ok(())
 }
 fn write_body(body: &str) -> Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("shield-pr-comment-{}.md", std::process::id()));

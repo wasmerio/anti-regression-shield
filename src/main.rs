@@ -5,6 +5,7 @@ mod process;
 mod reports;
 mod run_log;
 mod runtime;
+mod verdict;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

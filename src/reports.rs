@@ -22,6 +22,8 @@ pub struct RunMetadata {
     pub wasmer: WasmerMeta,
     #[serde(default)]
     pub counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub errors: RunErrors,
 }
 
 #[derive(Default, Deserialize)]
@@ -30,6 +32,12 @@ pub struct WasmerMeta {
     pub branch: String,
     #[serde(default)]
     pub commit: String,
+}
+
+#[derive(Default, Deserialize)]
+pub struct RunErrors {
+    #[serde(default)]
+    pub job_errors: BTreeMap<String, String>,
 }
 
 pub struct RunConfig<'a> {
@@ -106,11 +114,23 @@ pub fn load_baseline_status(
     compare_ref: &str,
     runner_name: &str,
 ) -> Result<BTreeMap<String, Status>> {
-    if !workspace.output_dir.join(".git").exists() || compare_ref.is_empty() {
+    load_status_at_ref(&workspace.output_dir, compare_ref, runner_name)
+}
+
+pub fn load_status(path: &Path) -> Result<BTreeMap<String, Status>> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+pub fn load_status_at_ref(
+    output_dir: &Path,
+    compare_ref: &str,
+    runner_name: &str,
+) -> Result<BTreeMap<String, Status>> {
+    if !output_dir.join(".git").exists() || compare_ref.is_empty() {
         return Ok(BTreeMap::new());
     }
     Ok(file_json::<BTreeMap<String, Status>>(
-        &workspace.output_dir,
+        output_dir,
         compare_ref,
         &status_filename(runner_name),
     )?
@@ -121,51 +141,18 @@ pub fn load_metadata(path: &Path) -> Result<RunMetadata> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
-pub fn load_language_summary(
+pub fn load_metadata_at_ref(
     output_dir: &Path,
-    lang: &'static str,
-    expected_sha: &str,
-) -> Result<(&'static str, String, bool)> {
-    let path = output_dir.join(metadata_filename(lang));
-    if !path.is_file() {
-        return Ok((lang, "missing artifact".to_string(), false));
+    compare_ref: &str,
+    runner_name: &str,
+) -> Result<RunMetadata> {
+    if !output_dir.join(".git").exists() || compare_ref.is_empty() {
+        return Ok(RunMetadata::default());
     }
-
-    let metadata = match load_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(err) => return Ok((lang, format!("invalid metadata: {err}"), false)),
-    };
-
-    let actual_sha = metadata
-        .wasmer
-        .commit
-        .get(..expected_sha.len())
-        .unwrap_or("");
-    let sha_ok = metadata.wasmer.commit == expected_sha || actual_sha == expected_sha;
-    let mut counts = ["PASS", "FAIL", "TIMEOUT", "SKIP", "FLAKY"]
-        .into_iter()
-        .map(|key| format!("{key}={}", metadata.counts.get(key).copied().unwrap_or(0)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if !metadata.wasmer.branch.is_empty() {
-        counts = format!(
-            "{} @ {} ({counts})",
-            metadata.wasmer.branch, metadata.wasmer.commit
-        );
-    }
-
-    Ok((
-        lang,
-        if sha_ok {
-            counts
-        } else {
-            format!(
-                "sha mismatch: expected {expected_sha}, got {} ({counts})",
-                metadata.wasmer.commit
-            )
-        },
-        sha_ok,
-    ))
+    Ok(
+        file_json::<RunMetadata>(output_dir, compare_ref, &metadata_filename(runner_name))?
+            .unwrap_or_default(),
+    )
 }
 
 fn counts_from_status(status: &BTreeMap<String, Status>) -> BTreeMap<String, usize> {
