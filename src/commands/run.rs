@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Args, ValueEnum};
 use rayon::prelude::*;
 
@@ -315,11 +315,12 @@ fn execute_tests(
         .join(".cache")
         .join(runner.opts().name)
         .join("tests.json");
-    let jobs = if filter.is_none() && cache_path.is_file() {
+    let use_cache = filter.is_none();
+    let jobs = if use_cache && cache_path.is_file() {
         serde_json::from_slice(&fs::read(&cache_path)?)?
     } else {
         let jobs = runner.discover(workspace, wasmer, filter, mode)?;
-        if filter.is_none() {
+        if use_cache {
             fs::create_dir_all(cache_path.parent().unwrap())?;
             fs::write(&cache_path, serde_json::to_vec_pretty(&jobs)?)?;
         }
