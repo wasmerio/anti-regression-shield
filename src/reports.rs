@@ -32,44 +32,50 @@ pub struct WasmerMeta {
     pub commit: String,
 }
 
+pub struct RunConfig<'a> {
+    pub timeout: Duration,
+    pub filter: Option<&'a str>,
+    pub runner_name: &'a str,
+    pub runner_commit: &'a str,
+    pub started_at: &'a str,
+    pub flaky_count: usize,
+}
+
 pub fn finalize_run(
     workspace: &Workspace,
     wasmer: &WasmerIdentity,
-    timeout: Duration,
-    filter: Option<&str>,
-    runner_name: &str,
-    runner_commit: &str,
-    started_at: &str,
     status: BTreeMap<String, Status>,
-    flaky_count: usize,
     errors: &[ItemError],
+    config: RunConfig<'_>,
 ) -> Result<()> {
     if status.is_empty() {
         bail!("upstream run did not produce any test statuses");
     }
 
     write_json(
-        &workspace.output_dir.join(status_filename(runner_name)),
+        &workspace
+            .output_dir
+            .join(status_filename(config.runner_name)),
         &status,
     )?;
 
     let mut counts = counts_from_status(&status);
-    counts.insert("FLAKY".to_string(), flaky_count);
+    counts.insert("FLAKY".to_string(), config.flaky_count);
     let mut runner_metadata = serde_json::Map::new();
-    runner_metadata.insert("commit".to_string(), json!(runner_commit));
+    runner_metadata.insert("commit".to_string(), json!(config.runner_commit));
     let metadata = json!({
         "wasmer": {
             "ref": wasmer.git_ref,
             "branch": wasmer.branch,
             "commit": wasmer.commit,
         },
-        (runner_name): runner_metadata,
+        (config.runner_name): runner_metadata,
         "config": {
-            "timeout_seconds": timeout.as_secs(),
-            "debug_test": filter,
+            "timeout_seconds": config.timeout.as_secs(),
+            "debug_test": config.filter,
         },
         "run": {
-            "started_at": started_at,
+            "started_at": config.started_at,
             "finished_at": now_utc(),
         },
         "counts": counts,
@@ -78,7 +84,9 @@ pub fn finalize_run(
         },
     });
     write_json(
-        &workspace.output_dir.join(metadata_filename(runner_name)),
+        &workspace
+            .output_dir
+            .join(metadata_filename(config.runner_name)),
         &metadata,
     )?;
     tracing::info!(counts = ?counts, errors = errors.len(), "done");

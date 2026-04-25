@@ -107,12 +107,7 @@ fn write_body(body: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn post_comment(
-    repo: &str,
-    pr_number: &str,
-    github_token: &str,
-    body_path: &PathBuf,
-) -> Result<()> {
+fn post_comment(repo: &str, pr_number: &str, github_token: &str, body_path: &Path) -> Result<()> {
     let status = Command::new("gh")
         .args([
             "pr",

@@ -1569,24 +1569,25 @@ fn ensure_dependency_forks(workspace: &Workspace) -> Result<Vec<DependencyForkPa
 }
 
 fn rust_build_env(_workspace: &Workspace, sysroot: Option<&Path>) -> Result<Vec<(String, String)>> {
-    let mut env = Vec::new();
-    env.push(("CARGO_NET_GIT_FETCH_WITH_CLI".into(), "true".into()));
-    env.push(("CARGO_INCREMENTAL".into(), "0".into()));
-    env.push(("RUSTC_BOOTSTRAP".into(), "1".into()));
-    env.push(("CFG_RELEASE".into(), "1.90.0-dev".into()));
-    env.push(("CFG_RELEASE_CHANNEL".into(), "dev".into()));
-    env.push(("CFG_VERSION".into(), "1.90.0-dev".into()));
-    env.push(("CFG_VER_HASH".into(), "local".into()));
-    env.push(("CFG_VER_DATE".into(), "1970-01-01".into()));
-    env.push(("RUSTC_INSTALL_BINDIR".into(), "bin".into()));
-    env.push(("MIRI_LOCAL_CRATES".into(), "".into()));
-    env.push(("DOC_RUST_LANG_ORG_CHANNEL".into(), "nightly".into()));
-    env.push(("CFG_COMPILER_HOST_TRIPLE".into(), rust_host()?));
-    env.push(("REAL_LIBRARY_PATH_VAR".into(), real_library_path_var()));
-    env.push((
-        "REAL_LIBRARY_PATH".into(),
-        std::env::var(real_library_path_var()).unwrap_or_default(),
-    ));
+    let mut env = vec![
+        ("CARGO_NET_GIT_FETCH_WITH_CLI".into(), "true".into()),
+        ("CARGO_INCREMENTAL".into(), "0".into()),
+        ("RUSTC_BOOTSTRAP".into(), "1".into()),
+        ("CFG_RELEASE".into(), "1.90.0-dev".into()),
+        ("CFG_RELEASE_CHANNEL".into(), "dev".into()),
+        ("CFG_VERSION".into(), "1.90.0-dev".into()),
+        ("CFG_VER_HASH".into(), "local".into()),
+        ("CFG_VER_DATE".into(), "1970-01-01".into()),
+        ("RUSTC_INSTALL_BINDIR".into(), "bin".into()),
+        ("MIRI_LOCAL_CRATES".into(), "".into()),
+        ("DOC_RUST_LANG_ORG_CHANNEL".into(), "nightly".into()),
+        ("CFG_COMPILER_HOST_TRIPLE".into(), rust_host()?),
+        ("REAL_LIBRARY_PATH_VAR".into(), real_library_path_var()),
+        (
+            "REAL_LIBRARY_PATH".into(),
+            std::env::var(real_library_path_var()).unwrap_or_default(),
+        ),
+    ];
     if let Some(llvm_config) = find_llvm_config() {
         env.push(("LLVM_CONFIG".into(), llvm_config.display().to_string()));
         env.push(("LLVM_CONFIG_PATH".into(), llvm_config.display().to_string()));
@@ -1714,9 +1715,7 @@ fn apply_text_replacements(repo: &Path, files: &[(&str, &[(&str, &str)])]) -> Re
         let mut text = fs::read_to_string(&path)?;
         let original = text.clone();
         for (from, to) in *replacements {
-            if to.is_empty() {
-                text = text.replace(from, to);
-            } else if !text.contains(to) {
+            if to.is_empty() || !text.contains(to) {
                 text = text.replace(from, to);
             }
         }
@@ -1883,10 +1882,10 @@ fn jobs_from_listed(
 fn parse_listed_tests(output: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
     for line in output.lines() {
-        if let Some((name, kind)) = line.trim().rsplit_once(": ") {
-            if matches!(kind, "test" | "benchmark") {
-                names.insert(name.to_string());
-            }
+        if let Some((name, kind)) = line.trim().rsplit_once(": ")
+            && matches!(kind, "test" | "benchmark")
+        {
+            names.insert(name.to_string());
         }
     }
     names.into_iter().collect()

@@ -26,6 +26,7 @@ pub struct RunnerOpts {
     /// Wasmer flags, ex: --experimental-napi
     pub wasmer_flags: &'static [&'static str],
     /// Optional docker compose file, ex: docker-compose.yml
+    #[allow(unused)] // TODO: Add docker with MySQL for PHP to test DB as well
     pub docker_compose: Option<&'static str>,
 }
 

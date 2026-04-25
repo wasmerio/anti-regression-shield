@@ -15,7 +15,7 @@ use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
 use crate::langs::rust::RustRunner;
 use crate::langs::{LangRunner, Mode, Status, TestJob, TestResult, Workspace};
-use crate::reports::{finalize_run, load_baseline_status};
+use crate::reports::{RunConfig, finalize_run, load_baseline_status};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, RuntimeSource, WasmerRuntime};
 
@@ -173,14 +173,16 @@ fn run_with_runner(
     finalize_run(
         &workspace,
         &resolved_wasmer.identity,
-        args.timeout,
-        args.filter.as_deref(),
-        opts.name,
-        opts.git_ref,
-        started_at,
         status,
-        flaky_count,
         &report.errors,
+        RunConfig {
+            timeout: args.timeout,
+            filter: args.filter.as_deref(),
+            runner_name: opts.name,
+            runner_commit: opts.git_ref,
+            started_at,
+            flaky_count,
+        },
     )?;
     Ok(report)
 }
@@ -552,14 +554,16 @@ mod tests {
         finalize_run(
             &workspace,
             &wasmer.identity,
-            Duration::from_secs(30),
-            None,
-            MockRunner::OPTS.name,
-            MockRunner::OPTS.git_ref,
-            "1970-01-01T00:00:00Z",
             results_by_id(&report.results),
-            0,
             &report.errors,
+            RunConfig {
+                timeout: Duration::from_secs(30),
+                filter: None,
+                runner_name: MockRunner::OPTS.name,
+                runner_commit: MockRunner::OPTS.git_ref,
+                started_at: "1970-01-01T00:00:00Z",
+                flaky_count: 0,
+            },
         )
         .expect("finalize");
 

@@ -336,7 +336,7 @@ impl LangRunner for PythonRunner {
                     let result =
                         self.discover_cases(workspace, wasmer, std::slice::from_ref(module));
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done % 25 == 0 || done == selected_modules.len() {
+                    if done.is_multiple_of(25) || done == selected_modules.len() {
                         tracing::info!(
                             completed = done,
                             total = selected_modules.len(),

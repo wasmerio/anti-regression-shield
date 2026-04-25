@@ -296,10 +296,10 @@ fn collect_node_tests(root: &Path, dir: &Path, tests: &mut BTreeSet<String>) -> 
             .map_err(|e| anyhow!("strip prefix {}: {e}", path.display()))?;
         let parts: Vec<&str> = rel.iter().filter_map(|part| part.to_str()).collect();
         if path.is_dir() {
-            if let Some(top) = parts.first() {
-                if SKIP_TOP_LEVEL_DIRS.contains(top) {
-                    continue;
-                }
+            if let Some(top) = parts.first()
+                && SKIP_TOP_LEVEL_DIRS.contains(top)
+            {
+                continue;
             }
             if parts.iter().any(|part| SKIP_PATH_PARTS.contains(part)) {
                 continue;
@@ -327,12 +327,12 @@ fn collect_node_tests(root: &Path, dir: &Path, tests: &mut BTreeSet<String>) -> 
         {
             continue;
         }
-        if parts.first() == Some(&"sqlite") && parts.len() == 2 {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                if SQLITE_ROOT_JUNK.contains(&name) {
-                    continue;
-                }
-            }
+        if parts.first() == Some(&"sqlite")
+            && parts.len() == 2
+            && let Some(name) = path.file_name().and_then(|name| name.to_str())
+            && SQLITE_ROOT_JUNK.contains(&name)
+        {
+            continue;
         }
         tests.insert(rel.to_string_lossy().replace('\\', "/"));
     }

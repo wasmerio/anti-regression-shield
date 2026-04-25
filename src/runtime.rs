@@ -88,22 +88,23 @@ impl WasmerRuntime {
                 })
             }
             RuntimeSource::Git { repo, git_ref } => {
-                if repo == WASMER_REPO && git_ref == "main" {
-                    if let Some((binary, commit)) = try_download_prebuilt_main_wasmer(work_root)? {
-                        tracing::info!(path = %binary.display(), "using prebuilt Wasmer main artifact");
-                        return Ok(ResolvedRuntime {
-                            identity: WasmerIdentity {
-                                git_ref: git_ref.clone(),
-                                branch: git_ref.clone(),
-                                commit,
-                            },
-                            runtime: Self {
-                                binary,
-                                default_timeout,
-                                process_log,
-                            },
-                        });
-                    }
+                if repo == WASMER_REPO
+                    && git_ref == "main"
+                    && let Some((binary, commit)) = try_download_prebuilt_main_wasmer(work_root)?
+                {
+                    tracing::info!(path = %binary.display(), "using prebuilt Wasmer main artifact");
+                    return Ok(ResolvedRuntime {
+                        identity: WasmerIdentity {
+                            git_ref: git_ref.clone(),
+                            branch: git_ref.clone(),
+                            commit,
+                        },
+                        runtime: Self {
+                            binary,
+                            default_timeout,
+                            process_log,
+                        },
+                    });
                 }
 
                 let checkout = ensure_checkout(&work_root.join("wasmer"), &repo, &git_ref)?;
@@ -208,16 +209,16 @@ impl WasmerRuntime {
 }
 
 fn resolve_local_wasmer_identity(wasmer_bin: &Path) -> Result<WasmerIdentity> {
-    if let Some(checkout) = infer_wasmer_checkout_from_bin(wasmer_bin) {
-        if checkout.join(".git").exists() {
-            let branch = current_branch(&checkout)?;
-            let commit = head_commit(&checkout)?;
-            return Ok(WasmerIdentity {
-                git_ref: branch.clone(),
-                branch,
-                commit,
-            });
-        }
+    if let Some(checkout) = infer_wasmer_checkout_from_bin(wasmer_bin)
+        && checkout.join(".git").exists()
+    {
+        let branch = current_branch(&checkout)?;
+        let commit = head_commit(&checkout)?;
+        return Ok(WasmerIdentity {
+            git_ref: branch.clone(),
+            branch,
+            commit,
+        });
     }
     Ok(WasmerIdentity {
         git_ref: "local".to_string(),
