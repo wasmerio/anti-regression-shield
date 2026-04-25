@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
@@ -31,6 +32,7 @@ const LOCK_UPDATES: &[(&str, &str, &str)] = &[
     ("library/portable-simd", "wasm-bindgen-test", "0.3.50"),
     ("library/compiler-builtins", "getrandom", "0.3.3"),
 ];
+const DEFAULT_RUST_CARGO_TOOLCHAIN: &str = "nightly";
 
 pub struct RustRunner;
 
@@ -741,15 +743,49 @@ struct MetadataTarget {
 
 fn cargo_command(cwd: &Path, config: Option<&Path>) -> Command {
     let mut command = Command::new("cargo");
-    command.arg("+wasix");
+    command.arg(format!("+{}", rust_cargo_toolchain()));
     if let Some(config) = config {
         command.arg("--config").arg(config);
     }
     command
         .current_dir(cwd)
         .env("RUST_BACKTRACE", "1")
-        .env("CARGO_TERM_COLOR", "never");
+        .env("CARGO_TERM_COLOR", "never")
+        .env("RUSTC", wasix_rustc());
     command
+}
+
+fn rust_cargo_toolchain() -> String {
+    std::env::var("RUST_CARGO_TOOLCHAIN")
+        .ok()
+        .filter(|toolchain| !toolchain.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_RUST_CARGO_TOOLCHAIN.to_string())
+}
+
+fn wasix_rustc() -> String {
+    std::env::var("WASIX_RUSTC")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| {
+            static RUSTC: OnceLock<String> = OnceLock::new();
+            RUSTC
+                .get_or_init(|| {
+                    let output = Command::new("rustup")
+                        .args(["which", "--toolchain", "wasix", "rustc"])
+                        .output();
+                    output
+                        .ok()
+                        .filter(|output| output.status.success())
+                        .and_then(|output| {
+                            String::from_utf8(output.stdout)
+                                .ok()
+                                .map(|path| path.trim().to_string())
+                                .filter(|path| !path.is_empty())
+                        })
+                        .unwrap_or_else(|| "rustc".to_string())
+                })
+                .clone()
+        })
 }
 
 fn build_targets(
@@ -1641,18 +1677,17 @@ fn rust_build_env(_workspace: &Workspace, sysroot: Option<&Path>) -> Result<Vec<
 }
 
 fn rust_host() -> Result<String> {
-    let output = Command::new("cargo")
-        .arg("+wasix")
-        .args(["-vV"])
+    let output = Command::new(wasix_rustc())
+        .arg("-vV")
         .output()
-        .context("run cargo +wasix -vV")?;
+        .context("run wasix rustc -vV")?;
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
         if let Some(host) = line.strip_prefix("host: ") {
             return Ok(host.to_string());
         }
     }
-    bail!("cargo +wasix -vV did not report host triple")
+    bail!("wasix rustc -vV did not report host triple")
 }
 
 fn real_library_path_var() -> String {

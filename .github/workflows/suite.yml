@@ -33,6 +33,7 @@ jobs:
       - if: matrix.lang == 'rust'
         run: |
           cargo install cargo-wasix --version 0.1.26 --locked
+          rustup toolchain install nightly --profile minimal
           export PATH="$HOME/.cargo/bin:$PATH"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           wasix_toolchain="$(cargo run --quiet -- run --lang rust --version)"
