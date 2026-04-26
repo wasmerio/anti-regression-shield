@@ -11,7 +11,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, TestRunOutput, Workspace};
+use super::{
+    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput,
+    Workspace,
+};
 use crate::process::ProcessError;
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
@@ -685,10 +688,7 @@ impl LangRunner for RustRunner {
                 Ok(())
             },
         );
-        Ok(TestRunOutput {
-            results: rust_results(job, &stdout, &stderr, result)?,
-            issues: vec![],
-        })
+        finish_rust_run(job, &stdout, &stderr, result)
     }
 }
 
@@ -1944,7 +1944,7 @@ fn rust_results(
     result: std::result::Result<(), ProcessError>,
 ) -> Result<Vec<TestResult>> {
     let mut parsed = parse_rust_statuses(stdout);
-    parsed.extend(parse_rust_statuses(stderr));
+    merge_rust_statuses(&mut parsed, parse_rust_statuses(stderr));
     let fallback = match result {
         Ok(()) => Status::Pass,
         Err(ProcessError::Timeout(_)) => Status::Timeout,
@@ -1974,6 +1974,29 @@ fn rust_results(
         .collect())
 }
 
+fn finish_rust_run(
+    job: &TestJob,
+    stdout: &str,
+    stderr: &str,
+    result: std::result::Result<(), ProcessError>,
+) -> Result<TestRunOutput> {
+    let issues = match &result {
+        Err(ProcessError::RustCrash(message))
+            if !parse_rust_statuses(stdout).is_empty() || !parse_rust_statuses(stderr).is_empty() =>
+        {
+            vec![TestIssue {
+                id: job.id.clone(),
+                message: ProcessError::RustCrash(message.clone()).to_string(),
+            }]
+        }
+        _ => vec![],
+    };
+    Ok(TestRunOutput {
+        results: rust_results(job, stdout, stderr, result)?,
+        issues,
+    })
+}
+
 fn parse_rust_statuses(output: &str) -> BTreeMap<String, Status> {
     let mut statuses = BTreeMap::new();
     for line in output.lines() {
@@ -1986,12 +2009,32 @@ fn parse_rust_statuses(output: &str) -> BTreeMap<String, Status> {
         let status = match status.split_whitespace().next() {
             Some("ok") => Status::Pass,
             Some("FAILED") => Status::Fail,
-            Some("ignored") => Status::Skip,
+            Some(token) if token.starts_with("ignored") => Status::Skip,
             _ => continue,
         };
-        statuses.insert(name.to_string(), status);
+        record_rust_status(&mut statuses, name, status);
     }
     statuses
+}
+
+fn merge_rust_statuses(
+    statuses: &mut BTreeMap<String, Status>,
+    incoming: BTreeMap<String, Status>,
+) {
+    for (name, status) in incoming {
+        record_rust_status(statuses, &name, status);
+    }
+}
+
+fn record_rust_status(statuses: &mut BTreeMap<String, Status>, name: &str, status: Status) {
+    statuses
+        .entry(name.to_string())
+        .and_modify(|current| {
+            if *current != Status::Skip {
+                *current = if status == Status::Skip { Status::Skip } else { status };
+            }
+        })
+        .or_insert(status);
 }
 
 fn artifact_path_from_job(workspace: &Workspace, id: &str) -> Result<PathBuf> {
@@ -2368,5 +2411,74 @@ mod tests {
             "rustc_ast_lowering"
         );
         assert_eq!(strip_cargo_hash("alloctests-new"), "alloctests-new");
+    }
+
+    #[test]
+    fn parse_rust_statuses_keeps_ignored_over_later_status() {
+        let statuses = parse_rust_statuses(
+            "\
+test arc::panic_no_leak ... ignored, test requires unwinding support
+test arc::panic_no_leak ... ok
+test other::case ... FAILED
+",
+        );
+        assert_eq!(statuses.get("arc::panic_no_leak"), Some(&Status::Skip));
+        assert_eq!(statuses.get("other::case"), Some(&Status::Fail));
+    }
+
+    #[test]
+    fn rust_results_keep_ignored_across_stdout_and_stderr() {
+        let job = TestJob {
+            id: "root::alloc::alloc-123".into(),
+            tests: vec!["root::alloc::alloc-123::arc::panic_no_leak".into()],
+        };
+        let results = rust_results(
+            &job,
+            "test arc::panic_no_leak ... ignored, test requires unwinding support\n",
+            "test arc::panic_no_leak ... FAILED\n",
+            Err(ProcessError::AbnormalExit("exit status: 101".into())),
+        )
+        .expect("results");
+        assert_eq!(
+            results,
+            vec![TestResult {
+                id: "root::alloc::alloc-123::arc::panic_no_leak".into(),
+                status: Status::Skip,
+            }]
+        );
+    }
+
+    #[test]
+    fn rust_run_keeps_results_and_reports_runtime_trap_issue() {
+        let job = TestJob {
+            id: "root::alloc::alloc-123".into(),
+            tests: vec!["root::alloc::alloc-123::vec::test_append".into()],
+        };
+        let output = finish_rust_run(
+            &job,
+            "test vec::test_append ... ok\n",
+            "RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n",
+            Err(ProcessError::RustCrash(
+                "RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
+                    .into(),
+            )),
+        )
+        .expect("output");
+        assert_eq!(
+            output.results,
+            vec![TestResult {
+                id: "root::alloc::alloc-123::vec::test_append".into(),
+                status: Status::Pass,
+            }]
+        );
+        assert_eq!(
+            output.issues,
+            vec![TestIssue {
+                id: "root::alloc::alloc-123".into(),
+                message:
+                    "crash: RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
+                        .into(),
+            }]
+        );
     }
 }
