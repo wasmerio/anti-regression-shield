@@ -3,19 +3,18 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 1038,
+    "FAIL": 983,
     "FLAKY": 231,
-    "PASS": 20798,
-    "SKIP": 53,
+    "PASS": 20813,
+    "SKIP": 93,
     "TIMEOUT": 0
   },
   "crashes": {
-    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-964883187b7f99e2.wasm[13015]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-964883187b7f99e2.wasm[13016]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-964883187b7f99e2.wasm[13033]:0xffffffff)\n",
-    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: Thread 16 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-dc01ac6ab8705e89.wasm[15811]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-dc01ac6ab8705e89.wasm[15812]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-dc01ac6ab8705e89.wasm[15829]:0xffffffff)\n"
+    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-964883187b7f99e2.wasm[13015]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-964883187b7f99e2.wasm[13016]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-964883187b7f99e2.wasm[13033]:0xffffffff)\n"
   },
   "run": {
-    "finished_at": "2026-04-26T15:51:39Z",
-    "started_at": "2026-04-26T14:33:29Z"
+    "finished_at": "2026-04-26T17:20:19Z",
+    "started_at": "2026-04-26T16:04:10Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
