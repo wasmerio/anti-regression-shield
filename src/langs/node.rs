@@ -16,8 +16,8 @@ use crate::process::{
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
 
-const NODE_TEST_TIMEOUT: Duration = Duration::from_secs(120);
-const NODE_HARNESS_TIMEOUT: Duration = Duration::from_secs(150);
+const NODE_TEST_TIMEOUT: Duration = Duration::from_secs(90);
+const NODE_HARNESS_TIMEOUT: Duration = Duration::from_secs(120);
 const SKIP_TOP_LEVEL_DIRS: &[&str] = &[
     "cctest",
     "benchmark",
