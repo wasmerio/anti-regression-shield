@@ -317,6 +317,7 @@ fn starts_rust_panic_capture(line: &str) -> bool {
 
 fn starts_wasm_runtime_trap_header(line: &str) -> bool {
     line.starts_with("RuntimeError: ")
+        || line.contains("failed with runtime error: RuntimeError:")
 }
 
 fn is_wasm_runtime_trap_frame(line: &str) -> bool {
@@ -536,6 +537,24 @@ mod tests {
             ProcessError::RustCrash(text) => {
                 assert!(text.contains("RuntimeError: out of bounds memory access"));
                 assert!(text.contains("<module>[9015]"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_detects_thread_runtime_trap() {
+        let err = run_process(
+            sh("printf \"Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\\n    at __pthread_exit (<module>[9015]:0xffffffff)\\n\" 1>&2; exit 1"),
+            |_, _| Ok(()),
+        )
+        .expect_err("runtime trap");
+        match err {
+            ProcessError::RustCrash(text) => {
+                assert!(text.contains(
+                    "Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access"
+                ));
+                assert!(text.contains("__pthread_exit"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

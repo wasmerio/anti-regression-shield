@@ -760,7 +760,7 @@ fn cargo_command(cwd: &Path, config: Option<&Path>) -> Command {
     }
     command
         .current_dir(cwd)
-        .env("RUST_BACKTRACE", "1")
+        .env("RUST_BACKTRACE", "full")
         .env("CARGO_TERM_COLOR", "never")
         .env("RUSTC", wasix_rustc());
     command
@@ -964,7 +964,6 @@ git-fetch-with-cli = true
 [target.wasm32-wasmer-wasi]
 rustflags = [
   "-Zforce-unstable-if-unmarked",
-  "-Cdebuginfo=0",
   "-Clink-arg=--threads=1",
 "#,
     );
@@ -1658,7 +1657,6 @@ fn rust_build_env(_workspace: &Workspace, sysroot: Option<&Path>) -> Result<Vec<
         let libdir = sysroot.join("lib").join("wasm32-wasi");
         let rustflags = [
             "-Zforce-unstable-if-unmarked".to_string(),
-            "-Cdebuginfo=0".to_string(),
             "-Clink-arg=--threads=1".to_string(),
             format!("-Lnative={}", libdir.display()),
             "-lstatic=c".to_string(),

@@ -181,7 +181,7 @@ impl WasmerRuntime {
             ProcessSpec {
                 program: self.binary.clone(),
                 args,
-                env: vec![("RUST_BACKTRACE".into(), "1".into())],
+                env: vec![("RUST_BACKTRACE".into(), "full".into())],
                 cwd: std::env::current_dir()
                     .map_err(|e| ProcessError::Spawn(format!("resolve cwd: {e}")))?,
                 timeout,
@@ -209,7 +209,7 @@ impl WasmerRuntime {
                     output.as_os_str().to_os_string(),
                     wasm.as_os_str().to_os_string(),
                 ],
-                env: vec![("RUST_BACKTRACE".into(), "1".into())],
+                env: vec![("RUST_BACKTRACE".into(), "full".into())],
                 cwd: std::env::current_dir()
                     .map_err(|e| ProcessError::Spawn(format!("resolve cwd: {e}")))?,
                 timeout: self.default_timeout.max(COMPILE_TIMEOUT),
@@ -430,7 +430,7 @@ mod tests {
             ProcessSpec {
                 program: resolved.runtime.binary.clone(),
                 args: vec!["--version".into()],
-                env: vec![("RUST_BACKTRACE".into(), "1".into())],
+                env: vec![("RUST_BACKTRACE".into(), "full".into())],
                 cwd: std::env::current_dir().expect("cwd"),
                 timeout: Duration::from_secs(10),
                 log_output: Arc::new(RunLog::new(dir.path().join("process.log"))),
