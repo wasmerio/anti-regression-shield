@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, TestRunOutput, Workspace};
 use crate::process::ProcessError;
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
@@ -658,7 +658,7 @@ impl LangRunner for RustRunner {
         job: &TestJob,
         mode: Mode,
         _log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>> {
+    ) -> Result<TestRunOutput> {
         let mut stdout = String::new();
         let mut stderr = String::new();
         let single_test = (job.tests.len() == 1).then(|| test_name_from_case_id(&job.tests[0]));
@@ -685,7 +685,10 @@ impl LangRunner for RustRunner {
                 Ok(())
             },
         );
-        rust_results(job, &stdout, &stderr, result)
+        Ok(TestRunOutput {
+            results: rust_results(job, &stdout, &stderr, result)?,
+            issues: vec![],
+        })
     }
 }
 

@@ -391,15 +391,25 @@ fn execute_tests(
     runner.prepare(workspace, wasmer, &jobs)?;
     let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
     let completed_tests = AtomicUsize::new(0);
-    let run_one = |job: &TestJob| -> (Vec<TestResult>, Option<ItemError>) {
+    let run_one = |job: &TestJob| -> (Vec<TestResult>, Vec<ItemError>) {
         if matches!(mode, Mode::Debug) {
             println!("\n=== {} ===", job.id);
         }
         if matches!(mode, Mode::Capture) {
             tracing::info!(job = job.id, tests = job.tests.len(), "running test job");
         }
-        let (results, error) = match runner.run_test(workspace, wasmer, job, mode, log) {
-            Ok(results) => (results, None),
+        let (results, errors) = match runner.run_test(workspace, wasmer, job, mode, log) {
+            Ok(output) => (
+                output.results,
+                output
+                    .issues
+                    .into_iter()
+                    .map(|issue| ItemError {
+                        id: issue.id,
+                        message: issue.message,
+                    })
+                    .collect(),
+            ),
             Err(e) => (
                 job.tests
                     .iter()
@@ -408,10 +418,10 @@ fn execute_tests(
                         status: Status::Fail,
                     })
                     .collect(),
-                Some(ItemError {
+                vec![ItemError {
                     id: job.id.clone(),
                     message: job_error_message(job, &e),
-                }),
+                }],
             ),
         };
         if matches!(mode, Mode::Capture) {
@@ -427,9 +437,9 @@ fn execute_tests(
                 );
             }
         }
-        (results, error)
+        (results, errors)
     };
-    let outcomes: Vec<(Vec<TestResult>, Option<ItemError>)> = match mode {
+    let outcomes: Vec<(Vec<TestResult>, Vec<ItemError>)> = match mode {
         Mode::Capture if runner.thread_count_multiplier() > 1 => {
             let threads = capture_thread_count(jobs.len(), runner.thread_count_multiplier());
             tracing::info!(
@@ -449,12 +459,12 @@ fn execute_tests(
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut counts = StatusCounts(HashMap::new());
-    for (tests, error) in outcomes {
+    for (tests, issues) in outcomes {
         for r in tests {
             counts.increment(r.status);
             results.push(r);
         }
-        if let Some(error) = error {
+        for error in issues {
             errors.push(error);
         }
     }
@@ -490,7 +500,7 @@ fn rerun_status(
     let rerun_log = Arc::new(RunLog::new(rerun_log_path.clone()));
     rerun_log.clear()?;
     let rerun_wasmer = wasmer.with_process_log(rerun_log.clone());
-    let tests = match runner.run_test(
+    let run_output = match runner.run_test(
         workspace,
         &rerun_wasmer,
         &TestJob {
@@ -500,7 +510,7 @@ fn rerun_status(
         Mode::Debug,
         Some(rerun_log.as_ref()),
     ) {
-        Ok(tests) => tests,
+        Ok(output) => output,
         Err(err) => {
             let output = read_rerun_log(&rerun_log_path)?;
             let message = format!("{err:#}");
@@ -514,11 +524,11 @@ fn rerun_status(
             ));
         }
     };
-    if tests.is_empty() {
-        let output = read_rerun_log(&rerun_log_path)?;
+    if run_output.results.is_empty() {
+        let rerun_output = read_rerun_log(&rerun_log_path)?;
         return Ok((
             Status::Fail,
-            Some(match output {
+            Some(match rerun_output {
                 Some(output) if !output.trim().is_empty() => {
                     format!("debug rerun for {id} produced 0 results\n\n{output}")
                 }
@@ -527,16 +537,27 @@ fn rerun_status(
             None,
         ));
     }
-    if tests.len() != 1 {
-        let output = read_rerun_log(&rerun_log_path)?;
-        bail!("{}", match output {
+    if run_output.results.len() != 1 {
+        let rerun_output = read_rerun_log(&rerun_log_path)?;
+        bail!("{}", match rerun_output {
             Some(output) if !output.trim().is_empty() => {
-                format!("debug rerun for {id} produced {} results\n\n{output}", tests.len())
+                format!(
+                    "debug rerun for {id} produced {} results\n\n{output}",
+                    run_output.results.len()
+                )
             }
-            _ => format!("debug rerun for {id} produced {} results", tests.len()),
+            _ => format!(
+                "debug rerun for {id} produced {} results",
+                run_output.results.len()
+            ),
         });
     }
-    let status = match tests.into_iter().next().unwrap().status {
+    let crash = run_output
+        .issues
+        .into_iter()
+        .find(|issue| issue.id == id)
+        .map(|issue| issue.message);
+    let status = match run_output.results.into_iter().next().unwrap().status {
         Status::Pass => Status::Pass,
         Status::Fail => Status::Fail,
         Status::Skip => Status::Skip,
@@ -555,7 +576,7 @@ fn rerun_status(
             ));
         }
     };
-    Ok((status, read_rerun_log(&rerun_log_path)?, None))
+    Ok((status, read_rerun_log(&rerun_log_path)?, crash))
 }
 
 fn rerun_log_path(workspace: &Workspace, id: &str) -> PathBuf {

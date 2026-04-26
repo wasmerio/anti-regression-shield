@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, TestRunOutput, Workspace};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
@@ -400,8 +400,8 @@ impl LangRunner for PythonRunner {
         job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>> {
-        Ok(match mode {
+    ) -> Result<TestRunOutput> {
+        let results = match mode {
             Mode::Capture => self.run_module_capture(workspace, wasmer, job, log)?,
             Mode::Debug => {
                 let result = wasmer.run(
@@ -432,6 +432,10 @@ impl LangRunner for PythonRunner {
                     status,
                 }]
             }
+        };
+        Ok(TestRunOutput {
+            results,
+            issues: vec![],
         })
     }
 

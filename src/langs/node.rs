@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace};
 use crate::process::{ProcessError, ProcessSpec, ignore_stream, run_process, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
@@ -54,8 +54,13 @@ impl NodeRunner {
         workspace.checkout.join("test")
     }
 
-    fn wrapper_path(workspace: &Workspace) -> PathBuf {
-        workspace.work_dir.join("node_via_wasmer.sh")
+    fn wrapper_path(workspace: &Workspace, job: &TestJob) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        job.id.hash(&mut hasher);
+        job.tests.hash(&mut hasher);
+        workspace
+            .work_dir
+            .join(format!("node-wrapper-{:016x}.sh", hasher.finish()))
     }
 
     fn result_file(workspace: &Workspace, job: &TestJob) -> PathBuf {
@@ -67,8 +72,16 @@ impl NodeRunner {
             .join(format!("node-results-{:016x}.tap", hasher.finish()))
     }
 
-    fn ensure_wrapper(&self, workspace: &Workspace, wasmer: &WasmerRuntime) -> Result<PathBuf> {
-        let path = Self::wrapper_path(workspace);
+    fn ensure_wrapper(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        job: &TestJob,
+    ) -> Result<PathBuf> {
+        let path = Self::wrapper_path(workspace, job);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         write_node_wrapper(
             &path,
             wasmer,
@@ -86,8 +99,8 @@ impl NodeRunner {
         job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>> {
-        let wrapper = self.ensure_wrapper(workspace, wasmer)?;
+    ) -> Result<TestRunOutput> {
+        let wrapper = self.ensure_wrapper(workspace, wasmer, job)?;
         let test_dir = Self::test_dir(workspace);
         for id in &job.tests {
             let rel_test = workspace.checkout.join("test").join(id);
@@ -137,7 +150,7 @@ impl NodeRunner {
             },
         );
 
-        let parsed = normalize_tap_results(parse_tap_results(&result_file)?, &job.tests);
+        let parsed = normalize_tap_entries(parse_tap_results(&result_file)?, &job.tests);
         let fallback = match result {
             Ok(()) => Status::Pass,
             Err(ProcessError::Timeout(_)) => Status::Timeout,
@@ -150,16 +163,28 @@ impl NodeRunner {
             }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
         };
-        Ok(job
-            .tests
-            .iter()
-            .cloned()
-            .chain(parsed.keys().filter(|id| !job.tests.contains(*id)).cloned())
-            .map(|id| TestResult {
-                status: parsed.get(&id).copied().unwrap_or(fallback),
-                id,
-            })
-            .collect())
+        let mut issues = vec![];
+        for (id, entry) in &parsed {
+            if let Some(message) = &entry.issue {
+                issues.push(TestIssue {
+                    id: id.clone(),
+                    message: message.clone(),
+                });
+            }
+        }
+        Ok(TestRunOutput {
+            results: job
+                .tests
+                .iter()
+                .cloned()
+                .chain(parsed.keys().filter(|id| !job.tests.contains(*id)).cloned())
+                .map(|id| TestResult {
+                    status: parsed.get(&id).map(|entry| entry.status).unwrap_or(fallback),
+                    id,
+                })
+                .collect(),
+            issues,
+        })
     }
 
     fn batch_jobs(ids: Vec<String>) -> Vec<TestJob> {
@@ -241,12 +266,26 @@ impl LangRunner for NodeRunner {
         job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>> {
+    ) -> Result<TestRunOutput> {
         self.run_one(workspace, wasmer, job, mode, log)
     }
 }
 
-fn parse_tap_results(path: &Path) -> Result<BTreeMap<String, Status>> {
+#[derive(Debug, PartialEq)]
+struct TapResult {
+    status: Status,
+    issue: Option<String>,
+}
+
+struct CurrentTapResult {
+    id: String,
+    status: Status,
+    block: Vec<String>,
+    exit_code: Option<i32>,
+    expect_stack_line: bool,
+}
+
+fn parse_tap_results(path: &Path) -> Result<BTreeMap<String, TapResult>> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
@@ -256,27 +295,44 @@ fn parse_tap_results(path: &Path) -> Result<BTreeMap<String, Status>> {
         let line = raw_line.trim();
         if let Some(id) = line.strip_prefix("ok ").and_then(parse_tap_id) {
             flush_tap_result(&mut results, &mut current);
-            let status = if line.contains(" # skip ") {
-                Status::Skip
-            } else {
-                Status::Pass
-            };
-            current = Some((id, status, false));
+            current = Some(CurrentTapResult {
+                id,
+                status: if line.contains(" # skip ") {
+                    Status::Skip
+                } else {
+                    Status::Pass
+                },
+                block: vec![raw_line.to_string()],
+                exit_code: None,
+                expect_stack_line: false,
+            });
             continue;
         }
         if let Some(id) = line.strip_prefix("not ok ").and_then(parse_tap_id) {
             flush_tap_result(&mut results, &mut current);
-            current = Some((id, Status::Fail, false));
+            current = Some(CurrentTapResult {
+                id,
+                status: Status::Fail,
+                block: vec![raw_line.to_string()],
+                exit_code: None,
+                expect_stack_line: false,
+            });
             continue;
         }
-        if let Some((_, status, expect_stack_line)) = current.as_mut() {
-            if *expect_stack_line {
+        if let Some(current) = current.as_mut() {
+            current.block.push(raw_line.to_string());
+            if current.expect_stack_line {
                 if line == "timeout" {
-                    *status = Status::Timeout;
+                    current.status = Status::Timeout;
                 }
-                *expect_stack_line = false;
+                current.expect_stack_line = false;
             } else if line == "stack: |-" {
-                *expect_stack_line = true;
+                current.expect_stack_line = true;
+            } else if let Some(exit_code) = line
+                .strip_prefix("exitcode: ")
+                .and_then(|value| value.trim().parse().ok())
+            {
+                current.exit_code = Some(exit_code);
             }
         }
         if line == "..." {
@@ -288,12 +344,36 @@ fn parse_tap_results(path: &Path) -> Result<BTreeMap<String, Status>> {
 }
 
 fn flush_tap_result(
-    results: &mut BTreeMap<String, Status>,
-    current: &mut Option<(String, Status, bool)>,
+    results: &mut BTreeMap<String, TapResult>,
+    current: &mut Option<CurrentTapResult>,
 ) {
-    if let Some((id, status, _)) = current.take() {
-        results.insert(id, status);
+    if let Some(current) = current.take() {
+        let issue = node_crash_issue(&current);
+        results.insert(
+            current.id,
+            TapResult {
+                status: current.status,
+                issue,
+            },
+        );
     }
+}
+
+fn node_crash_issue(result: &CurrentTapResult) -> Option<String> {
+    if result.status == Status::Timeout {
+        return None;
+    }
+    let block = result.block.join("\n");
+    let crash_like = matches!(result.exit_code, Some(134 | 139))
+        || block.contains("Segmentation fault")
+        || block.contains("core dumped")
+        || block.contains("double free or corruption")
+        || block.contains("Program recieved fatal signal")
+        || block.contains("Assertion failed:")
+        || block.contains("RuntimeError: out of bounds memory access")
+        || block.contains("RuntimeError: uninitialized element")
+        || block.contains("JoinHandle polled after completion");
+    crash_like.then(|| format!("crash: {block}"))
 }
 
 fn parse_tap_id(line: &str) -> Option<String> {
@@ -302,19 +382,19 @@ fn parse_tap_id(line: &str) -> Option<String> {
     (!id.is_empty()).then(|| id.replace('\\', "/"))
 }
 
-fn normalize_tap_results(
-    parsed: BTreeMap<String, Status>,
+fn normalize_tap_entries(
+    parsed: BTreeMap<String, TapResult>,
     expected: &[String],
-) -> BTreeMap<String, Status> {
+) -> BTreeMap<String, TapResult> {
     parsed
         .into_iter()
-        .map(|(id, status)| {
+        .map(|(id, entry)| {
             let id = expected
                 .iter()
                 .find(|expected| expected.as_str() == id || test_id_without_suffix(expected) == id)
                 .cloned()
                 .unwrap_or(id);
-            (id, status)
+            (id, entry)
         })
         .collect()
 }
@@ -467,9 +547,9 @@ not ok 3 parallel/test-fail.js
         .unwrap();
 
         let results = parse_tap_results(&path).unwrap();
-        assert_eq!(results["parallel/test-pass.js"], Status::Pass);
-        assert_eq!(results["parallel/test-skip.js"], Status::Skip);
-        assert_eq!(results["parallel/test-fail.js"], Status::Fail);
+        assert_eq!(results["parallel/test-pass.js"].status, Status::Pass);
+        assert_eq!(results["parallel/test-skip.js"].status, Status::Skip);
+        assert_eq!(results["parallel/test-fail.js"].status, Status::Fail);
     }
 
     #[test]
@@ -494,14 +574,78 @@ not ok 1 parallel/test-timeout.js
         .unwrap();
 
         let results = parse_tap_results(&path).unwrap();
-        assert_eq!(results["parallel/test-timeout.js"], Status::Timeout);
+        assert_eq!(results["parallel/test-timeout.js"].status, Status::Timeout);
     }
 
     #[test]
     fn normalizes_tap_ids_without_js_suffix() {
         let parsed = BTreeMap::from([("parallel/test-global".to_string(), Status::Pass)]);
-        let normalized = normalize_tap_results(parsed, &["parallel/test-global.js".to_string()]);
-        assert_eq!(normalized["parallel/test-global.js"], Status::Pass);
+        let normalized = normalize_tap_entries(
+            parsed
+                .into_iter()
+                .map(|(id, status)| {
+                    (
+                        id,
+                        TapResult {
+                            status,
+                            issue: None,
+                        },
+                    )
+                })
+                .collect(),
+            &["parallel/test-global.js".to_string()],
+        );
+        assert_eq!(normalized["parallel/test-global.js"].status, Status::Pass);
         assert!(!normalized.contains_key("parallel/test-global"));
+    }
+
+    #[test]
+    fn parses_tap_crash_issue() {
+        let dir = tempdir::TempDir::new("node-tap-crash").unwrap();
+        let path = dir.path().join("results.tap");
+        fs::write(
+            &path,
+            "\
+TAP version 13
+1..1
+not ok 1 parallel/test-crash.js
+  ---
+  duration_ms: 12.34
+  severity: fail
+  exitcode: 139
+  stack: |-
+    Assertion failed: foo
+    Segmentation fault (core dumped)
+  ...
+",
+        )
+        .unwrap();
+
+        let results = parse_tap_results(&path).unwrap();
+        assert_eq!(results["parallel/test-crash.js"].status, Status::Fail);
+        assert!(
+            results["parallel/test-crash.js"]
+                .issue
+                .as_ref()
+                .is_some_and(|message| message.starts_with("crash: "))
+        );
+    }
+
+    #[test]
+    fn wrapper_path_is_unique_per_job() {
+        let workspace = Workspace {
+            output_dir: PathBuf::from("/tmp/out"),
+            checkout: PathBuf::from("/tmp/checkout"),
+            work_dir: PathBuf::from("/tmp/work"),
+        };
+        let a = TestJob {
+            id: "node-batch-0001".into(),
+            tests: vec!["a.js".into()],
+        };
+        let b = TestJob {
+            id: "node-batch-0002".into(),
+            tests: vec!["b.js".into()],
+        };
+        assert_ne!(NodeRunner::wrapper_path(&workspace, &a), NodeRunner::wrapper_path(&workspace, &b));
     }
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
+use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, TestRunOutput, Workspace};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, WasmerRuntime};
@@ -237,8 +237,11 @@ impl LangRunner for PhpRunner {
         job: &TestJob,
         mode: Mode,
         _log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>> {
-        self.run_one(workspace, wasmer, job, mode)
+    ) -> Result<TestRunOutput> {
+        Ok(TestRunOutput {
+            results: self.run_one(workspace, wasmer, job, mode)?,
+            issues: vec![],
+        })
     }
 }
 

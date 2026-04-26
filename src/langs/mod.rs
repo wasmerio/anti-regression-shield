@@ -71,6 +71,18 @@ pub struct TestResult {
     pub status: Status,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct TestIssue {
+    pub id: String,
+    pub message: String,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct TestRunOutput {
+    pub results: Vec<TestResult>,
+    pub issues: Vec<TestIssue>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Mode {
     Capture,
@@ -101,7 +113,7 @@ pub trait LangRunner: Send + Sync {
         job: &TestJob,
         mode: Mode,
         log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>>;
+    ) -> Result<TestRunOutput>;
 
     /// Multiplies the default capture parallelism for IO-heavy runners that can
     /// benefit from keeping more test jobs in flight than there are CPU cores.
@@ -114,7 +126,7 @@ pub trait LangRunner: Send + Sync {
 pub mod tests {
     use anyhow::Result;
 
-    use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
+    use super::{LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace};
     use crate::process::ProcessError;
     use crate::run_log::RunLog;
     use crate::runtime::WasmerRuntime;
@@ -182,7 +194,7 @@ pub mod tests {
             job: &TestJob,
             _mode: Mode,
             _log: Option<&RunLog>,
-        ) -> Result<Vec<TestResult>> {
+        ) -> Result<TestRunOutput> {
             let status = match job.id.split('_').next().unwrap_or("") {
                 "fail" => Status::Fail,
                 "skip" => Status::Skip,
@@ -195,10 +207,13 @@ pub mod tests {
                 }
                 _ => Status::Pass,
             };
-            Ok(vec![TestResult {
-                id: job.id.clone(),
-                status,
-            }])
+            Ok(TestRunOutput {
+                results: vec![TestResult {
+                    id: job.id.clone(),
+                    status,
+                }],
+                issues: Vec::<TestIssue>::new(),
+            })
         }
     }
 }
