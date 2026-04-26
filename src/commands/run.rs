@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,7 +17,10 @@ use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
 use crate::langs::rust::RustRunner;
 use crate::langs::{LangRunner, Mode, Status, TestJob, TestResult, Workspace};
-use crate::reports::{RunConfig, finalize_run, load_baseline_status};
+use crate::reports::{
+    RunConfig, RunRegressions, finalize_run, load_baseline_status, test_regressions_filename,
+    write_regressions,
+};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, RuntimeSource, WasmerRuntime};
 
@@ -81,6 +86,8 @@ pub struct ItemError {
     pub id: String,
     pub message: String,
 }
+
+type StabilizedChange = (String, Status, bool, Option<(Status, String)>);
 
 impl StatusCounts {
     pub fn increment(&mut self, status: Status) {
@@ -176,13 +183,13 @@ fn run_with_runner(
 
     let status = results_by_id(&report.results);
     let baseline_status = load_baseline_status(&workspace, &args.compare_ref, opts.name)?;
-    let (status, flaky_count) = stabilize_changed_tests(
-        runner,
-        &workspace,
-        &wasmer,
-        log.as_deref(),
-        &baseline_status,
-        status,
+    let (status, flaky_count, regressions) =
+        stabilize_changed_tests(runner, &workspace, &wasmer, &baseline_status, status)?;
+    write_regressions(
+        &workspace
+            .output_dir
+            .join(test_regressions_filename(opts.name)),
+        &regressions,
     )?;
 
     finalize_run(
@@ -205,17 +212,20 @@ fn stabilize_changed_tests(
     runner: &dyn LangRunner,
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
-    log: Option<&RunLog>,
     baseline_status: &BTreeMap<String, Status>,
     candidate_status: BTreeMap<String, Status>,
-) -> Result<(BTreeMap<String, Status>, usize)> {
+) -> Result<(BTreeMap<String, Status>, usize, RunRegressions)> {
     let changed: Vec<String> = baseline_status
         .iter()
-        .filter(|(test, old)| candidate_status.get(*test).is_some_and(|new| new != *old))
+        .filter(|(test, old)| {
+            candidate_status
+                .get(*test)
+                .is_some_and(|new| should_stabilize_status_change(**old, *new))
+        })
         .map(|(test, _)| test.clone())
         .collect();
     if changed.is_empty() {
-        return Ok((candidate_status, 0));
+        return Ok((candidate_status, 0, RunRegressions::default()));
     }
 
     tracing::info!(
@@ -224,65 +234,79 @@ fn stabilize_changed_tests(
         timeout_seconds = RETEST_TIMEOUT.as_secs(),
         "stabilizing changed tests"
     );
-    let reruns: Vec<Result<(String, Status, bool)>> = changed
+    let reruns: Vec<Result<StabilizedChange>> = changed
         .par_iter()
         .map(|test_name| {
-            classify_changed_test(
+            stabilize_changed_test(
                 runner,
                 workspace,
                 wasmer,
-                log,
+                baseline_status,
+                &candidate_status,
                 test_name,
-                baseline_status
-                    .get(test_name)
-                    .copied()
-                    .unwrap_or(Status::Fail),
-                candidate_status
-                    .get(test_name)
-                    .copied()
-                    .unwrap_or(Status::Fail),
             )
         })
         .collect();
 
     let mut effective = candidate_status;
     let mut flaky_count = 0;
+    let mut regressions = RunRegressions::default();
     for rerun in reruns {
-        let (test_name, effective_status, flaky) = rerun?;
-        effective.insert(test_name, effective_status);
+        let (test_name, status, flaky, regression) = rerun?;
+        effective.insert(test_name.clone(), status);
         if flaky {
             flaky_count += 1;
         }
+        if let Some((status_after, output)) = regression {
+            regressions.record(test_name, Status::Pass, status_after, output);
+        }
     }
-    Ok((effective, flaky_count))
+    Ok((effective, flaky_count, regressions))
 }
 
-fn classify_changed_test(
+fn should_stabilize_status_change(old: Status, new: Status) -> bool {
+    old != new && (old == Status::Pass || new == Status::Pass)
+}
+
+fn stabilize_changed_test(
     runner: &dyn LangRunner,
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
-    log: Option<&RunLog>,
+    baseline_status: &BTreeMap<String, Status>,
+    candidate_status: &BTreeMap<String, Status>,
     test_name: &str,
-    old_status: Status,
-    new_status: Status,
-) -> Result<(String, Status, bool)> {
-    let rerun_once = || rerun_status(runner, workspace, wasmer, test_name, log);
+) -> Result<StabilizedChange> {
+    let old_status = baseline_status
+        .get(test_name)
+        .copied()
+        .unwrap_or(Status::Fail);
+    let new_status = candidate_status
+        .get(test_name)
+        .copied()
+        .unwrap_or(Status::Fail);
 
     if new_status != Status::Pass {
-        let outcome = rerun_once()?;
-        if outcome == new_status {
-            Ok((test_name.to_string(), new_status, false))
-        } else {
-            Ok((test_name.to_string(), old_status, true))
-        }
-    } else {
-        for _ in 0..RETEST_RUNS {
-            if rerun_once()? != Status::Pass {
-                return Ok((test_name.to_string(), old_status, true));
-            }
-        }
-        Ok((test_name.to_string(), Status::Pass, false))
+        let (rerun_status, output) = rerun_status(runner, workspace, wasmer, test_name)?;
+        let confirmed = rerun_status == new_status;
+        return Ok((
+            test_name.to_string(),
+            if confirmed { new_status } else { old_status },
+            !confirmed,
+            if confirmed && old_status == Status::Pass {
+                output.map(|output| (new_status, output))
+            } else {
+                None
+            },
+        ));
     }
+
+    for _ in 0..RETEST_RUNS {
+        if rerun_status(runner, workspace, wasmer, test_name)?.0 != Status::Pass {
+            return Ok((test_name.to_string(), old_status, true, None));
+        }
+    }
+
+    Ok((test_name.to_string(), Status::Pass, false, None))
 }
 
 fn now_utc() -> String {
@@ -430,10 +454,7 @@ fn execute_tests(
     })
 }
 
-fn job_error_message(
-    job: &TestJob,
-    error: &anyhow::Error,
-) -> String {
+fn job_error_message(job: &TestJob, error: &anyhow::Error) -> String {
     let mut message = format!("{error:#}\njob: {}\ntests:", job.id);
     for test in &job.tests {
         message.push_str("\n- ");
@@ -447,28 +468,72 @@ fn rerun_status(
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
     id: &str,
-    log: Option<&RunLog>,
-) -> Result<Status> {
-    let tests = runner.run_test(
+) -> Result<(Status, Option<String>)> {
+    let rerun_log_path = rerun_log_path(workspace, id);
+    if let Some(parent) = rerun_log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let rerun_log = Arc::new(RunLog::new(rerun_log_path.clone()));
+    rerun_log.clear()?;
+    let rerun_wasmer = wasmer.with_process_log(rerun_log.clone());
+    let tests = match runner.run_test(
         workspace,
-        wasmer,
+        &rerun_wasmer,
         &TestJob {
             id: id.to_string(),
             tests: vec![id.to_string()],
         },
         Mode::Debug,
-        log,
-    )?;
+        Some(rerun_log.as_ref()),
+    ) {
+        Ok(tests) => tests,
+        Err(err) => {
+            return Ok((
+                Status::Fail,
+                Some(format_rerun_error(&err, read_rerun_log(&rerun_log_path)?)),
+            ));
+        }
+    };
     if tests.len() != 1 {
         bail!("debug rerun for {id} produced {} results", tests.len());
     }
-    Ok(match tests.into_iter().next().unwrap().status {
+    let status = match tests.into_iter().next().unwrap().status {
         Status::Pass => Status::Pass,
         Status::Fail => Status::Fail,
         Status::Skip => Status::Skip,
         Status::Timeout => Status::Timeout,
         Status::Flaky => bail!("debug rerun for {id} returned FLAKY"),
-    })
+    };
+    Ok((status, read_rerun_log(&rerun_log_path)?))
+}
+
+fn format_rerun_error(err: &anyhow::Error, output: Option<String>) -> String {
+    match output {
+        Some(output) if !output.trim().is_empty() => format!("{err:#}\n\n{output}"),
+        _ => format!("{err:#}"),
+    }
+}
+
+fn rerun_log_path(workspace: &Workspace, id: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    workspace
+        .work_dir
+        .join("reruns")
+        .join(format!("{:016x}.log", hasher.finish()))
+}
+
+fn read_rerun_log(path: &PathBuf) -> Result<Option<String>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let output = String::from_utf8_lossy(&bytes).into_owned();
+    Ok((!output.trim().is_empty()).then_some(output))
 }
 
 fn results_by_id(results: &[TestResult]) -> BTreeMap<String, Status> {
@@ -625,6 +690,84 @@ mod tests {
         let error = metadata["crashes"]["panic_g"].as_str().expect("job crash");
         assert!(error.contains("crash: fatal runtime error: stack overflow, aborting"));
         assert!(error.contains("- panic_g"));
+    }
+
+    #[test]
+    fn stabilization_only_retries_pass_boundary_changes() {
+        assert!(should_stabilize_status_change(Status::Pass, Status::Fail));
+        assert!(should_stabilize_status_change(
+            Status::Pass,
+            Status::Timeout
+        ));
+        assert!(should_stabilize_status_change(Status::Fail, Status::Pass));
+        assert!(should_stabilize_status_change(
+            Status::Timeout,
+            Status::Pass
+        ));
+
+        assert!(!should_stabilize_status_change(
+            Status::Fail,
+            Status::Timeout
+        ));
+        assert!(!should_stabilize_status_change(
+            Status::Timeout,
+            Status::Fail
+        ));
+        assert!(!should_stabilize_status_change(Status::Skip, Status::Fail));
+        assert!(!should_stabilize_status_change(Status::Pass, Status::Pass));
+    }
+
+    #[test]
+    fn stabilization_treats_rerun_errors_as_failed_tests() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = TempDir::new("shield-stabilize-error").expect("tempdir");
+        let workspace = Workspace {
+            output_dir: dir.path().to_path_buf(),
+            checkout: cwd,
+            work_dir: dir.path().to_path_buf(),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::ZERO,
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+        let baseline = BTreeMap::from([("panic_g".to_string(), Status::Pass)]);
+        let candidate = BTreeMap::from([("panic_g".to_string(), Status::Fail)]);
+
+        let (status, flaky_count, regressions) = stabilize_changed_tests(
+            &MockRunner,
+            &workspace,
+            &wasmer.runtime,
+            &baseline,
+            candidate,
+        )
+        .expect("stabilize");
+
+        assert_eq!(status["panic_g"], Status::Fail);
+        assert_eq!(flaky_count, 0);
+        assert_eq!(regressions.regressions.len(), 1);
+        assert_eq!(regressions.regressions[0].id, "panic_g");
+        assert_eq!(regressions.regressions[0].status_before, Status::Pass);
+        assert_eq!(regressions.regressions[0].status_after, Status::Fail);
+        assert!(
+            regressions.regressions[0]
+                .output
+                .contains("fatal runtime error: stack overflow")
+        );
+    }
+
+    #[test]
+    fn reads_log_output() {
+        let dir = TempDir::new("shield-log-tail").expect("tempdir");
+        let path = dir.path().join("test_mock.log");
+        fs::write(&path, "[stderr] detail line 1\n[stdout] detail line 2\n").expect("write log");
+
+        let output = read_rerun_log(&path)
+            .expect("read log output")
+            .expect("captured output");
+        assert_eq!(output, "[stderr] detail line 1\n[stdout] detail line 2\n");
     }
 
     #[test]

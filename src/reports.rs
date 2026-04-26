@@ -26,6 +26,40 @@ pub struct RunMetadata {
     pub crashes: BTreeMap<String, String>,
 }
 
+#[derive(Default, Deserialize, Serialize)]
+pub struct RunRegressions {
+    #[serde(default)]
+    pub regressions: Vec<RegressionRecord>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct RegressionRecord {
+    pub id: String,
+    pub status_before: Status,
+    pub status_after: Status,
+    pub output: String,
+}
+
+impl RunRegressions {
+    pub fn record(
+        &mut self,
+        id: String,
+        status_before: Status,
+        status_after: Status,
+        output: String,
+    ) {
+        if output.trim().is_empty() {
+            return;
+        }
+        self.regressions.push(RegressionRecord {
+            id,
+            status_before,
+            status_after,
+            output,
+        });
+    }
+}
+
 #[derive(Default, Deserialize)]
 pub struct WasmerMeta {
     #[serde(default)]
@@ -101,6 +135,10 @@ pub fn test_summary_filename(runner_name: &str) -> String {
     format!("tests_{runner_name}_summary.json")
 }
 
+pub fn test_regressions_filename(runner_name: &str) -> String {
+    format!("tests_{runner_name}_regressions.json")
+}
+
 pub fn load_baseline_status(
     workspace: &Workspace,
     compare_ref: &str,
@@ -131,6 +169,17 @@ pub fn load_status_at_ref(
 
 pub fn load_metadata(path: &Path) -> Result<RunMetadata> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+pub fn load_regressions(path: &Path) -> Result<RunRegressions> {
+    if !path.is_file() {
+        return Ok(RunRegressions::default());
+    }
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+pub fn write_regressions(path: &Path, regressions: &RunRegressions) -> Result<()> {
+    write_json(path, regressions)
 }
 
 pub fn load_metadata_at_ref(

@@ -63,6 +63,14 @@ struct GitHubRun {
 }
 
 impl WasmerRuntime {
+    pub fn with_process_log(&self, process_log: Arc<RunLog>) -> Self {
+        Self {
+            binary: self.binary.clone(),
+            default_timeout: self.default_timeout,
+            process_log,
+        }
+    }
+
     pub fn resolve(
         source: RuntimeSource,
         work_root: &Path,

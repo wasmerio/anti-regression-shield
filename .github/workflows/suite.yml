@@ -64,5 +64,6 @@ jobs:
           path: |
             tests_${{ matrix.lang }}_results.json
             tests_${{ matrix.lang }}_summary.json
+            tests_${{ matrix.lang }}_regressions.json
             test_${{ matrix.lang }}.log
           if-no-files-found: ignore

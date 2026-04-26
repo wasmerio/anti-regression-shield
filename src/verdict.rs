@@ -6,11 +6,13 @@ use anyhow::{Result, bail};
 
 use crate::langs::Status;
 use crate::reports::{
-    RunMetadata, load_metadata, load_metadata_at_ref, load_status, load_status_at_ref,
-    test_results_filename, test_summary_filename,
+    RunMetadata, RunRegressions, load_metadata, load_metadata_at_ref, load_regressions,
+    load_status, load_status_at_ref, test_regressions_filename, test_results_filename,
+    test_summary_filename,
 };
 
 const COMPARE_REF: &str = "origin/main";
+const REGRESSION_OUTPUT_LIMIT: usize = 2_000;
 
 #[derive(Clone, Copy)]
 struct LangConfig {
@@ -110,9 +112,11 @@ fn collect_language_verdict(
     target_sha: &str,
 ) -> Result<LanguageVerdict> {
     let metadata_path = output_dir.join(test_summary_filename(config.name));
+    let regressions_path = output_dir.join(test_regressions_filename(config.name));
     let status_path = output_dir.join(test_results_filename(config.name));
     let metadata = load_metadata(&metadata_path)?;
     ensure_target_sha(config.name, &metadata, target_sha)?;
+    let confirmed_regressions = load_regressions(&regressions_path)?;
     let status = load_status(&status_path)?;
     let baseline_metadata = load_metadata_at_ref(output_dir, COMPARE_REF, config.name)?;
     let baseline_status = load_status_at_ref(output_dir, COMPARE_REF, config.name)?;
@@ -120,6 +124,7 @@ fn collect_language_verdict(
     let improvements = changed_tests(&baseline_status, &status, is_improvement);
     let regressions = changed_tests(&baseline_status, &status, is_regression);
     let crash_example = first_new_crash(config, &metadata, &baseline_metadata);
+    let failure_example = first_failure_example(config, &confirmed_regressions);
 
     Ok(LanguageVerdict {
         config,
@@ -132,7 +137,7 @@ fn collect_language_verdict(
         improvements,
         regressions,
         crash_example,
-        failure_example: None,
+        failure_example,
     })
 }
 
@@ -226,6 +231,38 @@ fn first_new_crash(
             test_source: None,
             output: Some(message.clone()),
         })
+}
+
+fn first_failure_example(
+    config: LangConfig,
+    regressions: &RunRegressions,
+) -> Option<FailureExample> {
+    let regression = regressions
+        .regressions
+        .iter()
+        .min_by_key(|regression| regression.output.len())?;
+    Some(FailureExample {
+        repro_command: Some(format!(
+            "shield run --lang {} --wasmer [WASMER BINARY] {}",
+            config.name, regression.id
+        )),
+        test_source: None,
+        status_before: regression.status_before,
+        status_after: regression.status_after,
+        output: Some(truncate_regression_output(&regression.output)),
+    })
+}
+
+fn truncate_regression_output(output: &str) -> String {
+    if output.chars().count() <= REGRESSION_OUTPUT_LIMIT {
+        return output.to_string();
+    }
+    let mut truncated = output
+        .chars()
+        .take(REGRESSION_OUTPUT_LIMIT)
+        .collect::<String>();
+    truncated.push_str("\n[output truncated]");
+    truncated
 }
 
 fn render_verdict(
