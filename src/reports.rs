@@ -115,7 +115,7 @@ pub fn finalize_run(
             "finished_at": now_utc(),
         },
         "counts": counts,
-        "crashes": error_messages(errors),
+        "crashes": crash_messages(errors),
     });
     write_json(
         &workspace
@@ -221,9 +221,10 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
-fn error_messages(errors: &[ItemError]) -> BTreeMap<String, String> {
+fn crash_messages(errors: &[ItemError]) -> BTreeMap<String, String> {
     errors
         .iter()
+        .filter(|error| error.message.starts_with("crash: "))
         .map(|error| (error.id.clone(), error.message.clone()))
         .collect()
 }

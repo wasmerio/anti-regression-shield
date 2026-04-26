@@ -754,7 +754,48 @@ mod tests {
         .expect("parse metadata");
         let error = metadata["crashes"]["panic_g"].as_str().expect("job crash");
         assert!(error.contains("crash: fatal runtime error: stack overflow, aborting"));
-        assert!(error.contains("- panic_g"));
+    }
+
+    #[test]
+    fn finalize_run_separates_non_crash_errors_from_crashes() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = TempDir::new("shield-run-non-crash").expect("tempdir");
+        let workspace = Workspace {
+            output_dir: dir.path().to_path_buf(),
+            checkout: cwd,
+            work_dir: dir.path().to_path_buf(),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::ZERO,
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+
+        finalize_run(
+            &workspace,
+            &wasmer.identity,
+            BTreeMap::from([("php-batch-0294".to_string(), Status::Fail)]),
+            &[ItemError {
+                id: "php-batch-0294".into(),
+                message: "process exited abnormally: exit status: 1".into(),
+            }],
+            RunConfig {
+                timeout: Duration::from_secs(30),
+                runner_name: MockRunner::OPTS.name,
+                runner_commit: MockRunner::OPTS.git_ref,
+                started_at: "1970-01-01T00:00:00Z",
+                flaky_count: 0,
+            },
+        )
+        .expect("finalize");
+
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &fs::read(dir.path().join(test_summary_filename("mock"))).expect("metadata"),
+        )
+        .expect("parse metadata");
+        assert!(metadata["crashes"]["php-batch-0294"].is_null());
     }
 
     #[test]

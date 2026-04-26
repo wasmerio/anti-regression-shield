@@ -15,7 +15,7 @@ use super::{
     LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput,
     Workspace,
 };
-use crate::process::ProcessError;
+use crate::process::{ProcessError, extract_runtime_crash_text};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
 
@@ -1978,21 +1978,38 @@ fn finish_rust_run(
     stderr: &str,
     result: std::result::Result<(), ProcessError>,
 ) -> Result<TestRunOutput> {
-    let issues = match &result {
-        Err(ProcessError::RustCrash(message))
-            if !parse_rust_statuses(stdout).is_empty() || !parse_rust_statuses(stderr).is_empty() =>
-        {
-            vec![TestIssue {
-                id: job.id.clone(),
-                message: ProcessError::RustCrash(message.clone()).to_string(),
-            }]
-        }
-        _ => vec![],
-    };
+    let issues = rust_run_issues(job, stdout, stderr, &result);
     Ok(TestRunOutput {
         results: rust_results(job, stdout, stderr, result)?,
         issues,
     })
+}
+
+fn rust_run_issues(
+    job: &TestJob,
+    stdout: &str,
+    stderr: &str,
+    result: &std::result::Result<(), ProcessError>,
+) -> Vec<TestIssue> {
+    let saw_statuses = !parse_rust_statuses(stdout).is_empty() || !parse_rust_statuses(stderr).is_empty();
+    if !saw_statuses {
+        return vec![];
+    }
+    match result {
+        Err(ProcessError::RustCrash(message)) => vec![TestIssue {
+            id: job.id.clone(),
+            message: ProcessError::RustCrash(message.clone()).to_string(),
+        }],
+        _ => extract_runtime_crash_text(stderr)
+            .or_else(|| extract_runtime_crash_text(stdout))
+            .map(|message| {
+                vec![TestIssue {
+                    id: job.id.clone(),
+                    message: format!("crash: {message}"),
+                }]
+            })
+            .unwrap_or_default(),
+    }
 }
 
 fn parse_rust_statuses(output: &str) -> BTreeMap<String, Status> {
@@ -2475,6 +2492,41 @@ test other::case ... FAILED
                 id: "root::alloc::alloc-123".into(),
                 message:
                     "crash: RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
+                        .into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rust_run_recovers_runtime_trap_issue_from_output_on_abnormal_exit() {
+        let job = TestJob {
+            id: "root::rustc_thread_pool::rustc_thread_pool-123".into(),
+            tests: vec![
+                "root::rustc_thread_pool::rustc_thread_pool-123::broadcast::tests::broadcast_global"
+                    .into(),
+            ],
+        };
+        let output = finish_rust_run(
+            &job,
+            "test broadcast::tests::broadcast_global ... ok\n",
+            "Thread 16 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool.wasm[15811]:0xffffffff)\n",
+            Err(ProcessError::AbnormalExit("exit status: 1".into())),
+        )
+        .expect("output");
+        assert_eq!(
+            output.results,
+            vec![TestResult {
+                id: "root::rustc_thread_pool::rustc_thread_pool-123::broadcast::tests::broadcast_global"
+                    .into(),
+                status: Status::Pass,
+            }]
+        );
+        assert_eq!(
+            output.issues,
+            vec![TestIssue {
+                id: "root::rustc_thread_pool::rustc_thread_pool-123".into(),
+                message:
+                    "crash: Thread 16 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool.wasm[15811]:0xffffffff)\n"
                         .into(),
             }]
         );
