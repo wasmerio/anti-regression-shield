@@ -346,6 +346,14 @@ impl RustRunner {
                         "#![allow(clippy::match_like_matches_macro)]\n#![allow(unused_extern_crates)]",
                     )][..],
                 ),
+                // HACK: Wasix subprocesses can lose child current_dir, so use an absolute fixture path.
+                (
+                    "src/tools/linkchecker/tests/checks.rs",
+                    &[(
+                        "    let output = Command::new(env!(\"CARGO_BIN_EXE_linkchecker\"))\n        .current_dir(Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"tests\"))\n        .arg(dirname)\n        .output()\n        .unwrap();",
+                        "    let output = Command::new(env!(\"CARGO_BIN_EXE_linkchecker\"))\n        .arg(Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"tests\").join(dirname))\n        .output()\n        .unwrap();",
+                    )][..],
+                ),
             ],
         )?;
         apply_manifest_dependency_fixups(&workspace.checkout)?;
