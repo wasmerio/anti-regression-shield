@@ -15024,7 +15024,7 @@
   "ext/standard/tests/array/bug74361.phpt": "PASS",
   "ext/standard/tests/array/bug74361_2.phpt": "PASS",
   "ext/standard/tests/array/bug75433.phpt": "PASS",
-  "ext/standard/tests/array/bug75653.phpt": "FAIL",
+  "ext/standard/tests/array/bug75653.phpt": "PASS",
   "ext/standard/tests/array/bug76505.phpt": "PASS",
   "ext/standard/tests/array/bug76713.phpt": "PASS",
   "ext/standard/tests/array/bug76778.phpt": "PASS",
