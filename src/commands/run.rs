@@ -87,7 +87,13 @@ pub struct ItemError {
     pub message: String,
 }
 
-type StabilizedChange = (String, Status, bool, Option<(Status, String)>, Option<String>);
+type StabilizedChange = (
+    String,
+    Status,
+    bool,
+    Option<(Status, String)>,
+    Option<String>,
+);
 
 impl StatusCounts {
     pub fn increment(&mut self, status: Status) {
@@ -183,8 +189,14 @@ fn run_with_runner(
 
     let status = results_by_id(&report.results);
     let baseline_status = load_baseline_status(&workspace, &args.compare_ref, opts.name)?;
-    let (status, flaky_count, regressions, rerun_errors) =
-        stabilize_changed_tests(runner, &workspace, &wasmer, &baseline_status, status)?;
+    let (status, flaky_count, regressions, rerun_errors) = stabilize_changed_tests(
+        runner,
+        &workspace,
+        &wasmer,
+        log.as_deref(),
+        &baseline_status,
+        status,
+    )?;
     write_regressions(
         &workspace
             .output_dir
@@ -214,9 +226,15 @@ fn stabilize_changed_tests(
     runner: &dyn LangRunner,
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
+    log: Option<&RunLog>,
     baseline_status: &BTreeMap<String, Status>,
     candidate_status: BTreeMap<String, Status>,
-) -> Result<(BTreeMap<String, Status>, usize, RunRegressions, Vec<ItemError>)> {
+) -> Result<(
+    BTreeMap<String, Status>,
+    usize,
+    RunRegressions,
+    Vec<ItemError>,
+)> {
     let changed: Vec<String> = baseline_status
         .iter()
         .filter(|(test, old)| {
@@ -243,6 +261,7 @@ fn stabilize_changed_tests(
                 runner,
                 workspace,
                 wasmer,
+                log,
                 baseline_status,
                 &candidate_status,
                 test_name,
@@ -281,6 +300,7 @@ fn stabilize_changed_test(
     runner: &dyn LangRunner,
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
+    log: Option<&RunLog>,
     baseline_status: &BTreeMap<String, Status>,
     candidate_status: &BTreeMap<String, Status>,
     test_name: &str,
@@ -295,7 +315,8 @@ fn stabilize_changed_test(
         .unwrap_or(Status::Fail);
 
     if new_status != Status::Pass {
-        let (rerun_status, output, crash) = rerun_status(runner, workspace, wasmer, test_name)?;
+        let (rerun_status, output, crash) =
+            rerun_status(runner, workspace, wasmer, log, test_name)?;
         let confirmed = rerun_status == new_status;
         return Ok((
             test_name.to_string(),
@@ -311,7 +332,7 @@ fn stabilize_changed_test(
     }
 
     for _ in 0..RETEST_RUNS {
-        let (rerun_status, _, crash) = rerun_status(runner, workspace, wasmer, test_name)?;
+        let (rerun_status, _, crash) = rerun_status(runner, workspace, wasmer, log, test_name)?;
         if rerun_status != Status::Pass {
             return Ok((test_name.to_string(), old_status, true, None, crash));
         }
@@ -491,6 +512,7 @@ fn rerun_status(
     runner: &dyn LangRunner,
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
+    log: Option<&RunLog>,
     id: &str,
 ) -> Result<(Status, Option<String>, Option<String>)> {
     let rerun_log_path = rerun_log_path(workspace, id);
@@ -513,6 +535,7 @@ fn rerun_status(
         Ok(output) => output,
         Err(err) => {
             let output = read_rerun_log(&rerun_log_path)?;
+            append_rerun_log(log, id, output.as_deref())?;
             let message = format!("{err:#}");
             return Ok((
                 Status::Fail,
@@ -526,6 +549,7 @@ fn rerun_status(
     };
     if run_output.results.is_empty() {
         let rerun_output = read_rerun_log(&rerun_log_path)?;
+        append_rerun_log(log, id, rerun_output.as_deref())?;
         return Ok((
             Status::Fail,
             Some(match rerun_output {
@@ -539,18 +563,22 @@ fn rerun_status(
     }
     if run_output.results.len() != 1 {
         let rerun_output = read_rerun_log(&rerun_log_path)?;
-        bail!("{}", match rerun_output {
-            Some(output) if !output.trim().is_empty() => {
-                format!(
-                    "debug rerun for {id} produced {} results\n\n{output}",
+        append_rerun_log(log, id, rerun_output.as_deref())?;
+        bail!(
+            "{}",
+            match rerun_output {
+                Some(output) if !output.trim().is_empty() => {
+                    format!(
+                        "debug rerun for {id} produced {} results\n\n{output}",
+                        run_output.results.len()
+                    )
+                }
+                _ => format!(
+                    "debug rerun for {id} produced {} results",
                     run_output.results.len()
-                )
+                ),
             }
-            _ => format!(
-                "debug rerun for {id} produced {} results",
-                run_output.results.len()
-            ),
-        });
+        );
     }
     let crash = run_output
         .issues
@@ -564,6 +592,7 @@ fn rerun_status(
         Status::Timeout => Status::Timeout,
         Status::Flaky => {
             let output = read_rerun_log(&rerun_log_path)?;
+            append_rerun_log(log, id, output.as_deref())?;
             return Ok((
                 Status::Fail,
                 Some(match output {
@@ -576,7 +605,9 @@ fn rerun_status(
             ));
         }
     };
-    Ok((status, read_rerun_log(&rerun_log_path)?, crash))
+    let output = read_rerun_log(&rerun_log_path)?;
+    append_rerun_log(log, id, output.as_deref())?;
+    Ok((status, output, crash))
 }
 
 fn rerun_log_path(workspace: &Workspace, id: &str) -> PathBuf {
@@ -586,6 +617,24 @@ fn rerun_log_path(workspace: &Workspace, id: &str) -> PathBuf {
         .work_dir
         .join("reruns")
         .join(format!("{:016x}.log", hasher.finish()))
+}
+
+fn append_rerun_log(log: Option<&RunLog>, id: &str, output: Option<&str>) -> Result<()> {
+    let Some(log) = log else {
+        return Ok(());
+    };
+    let Some(output) = output else {
+        return Ok(());
+    };
+    if output.trim().is_empty() {
+        return Ok(());
+    }
+    log.write_line("rerun", &format!("=== rerun {id} ==="))?;
+    for line in output.lines() {
+        log.write_line("rerun", line)?;
+    }
+    log.write_line("rerun", &format!("=== end rerun {id} ==="))?;
+    Ok(())
 }
 
 fn read_rerun_log(path: &PathBuf) -> Result<Option<String>> {
@@ -846,6 +895,7 @@ mod tests {
             &MockRunner,
             &workspace,
             &wasmer.runtime,
+            None,
             &baseline,
             candidate,
         )
@@ -864,7 +914,11 @@ mod tests {
         );
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].id, "panic_g");
-        assert!(errors[0].message.contains("fatal runtime error: stack overflow"));
+        assert!(
+            errors[0]
+                .message
+                .contains("fatal runtime error: stack overflow")
+        );
     }
 
     #[test]
@@ -890,6 +944,7 @@ mod tests {
             &MockRunner,
             &workspace,
             &wasmer.runtime,
+            None,
             &baseline,
             candidate,
         )

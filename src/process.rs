@@ -289,14 +289,15 @@ fn is_tracing_json_line(line: &str) -> bool {
     line.starts_with("{\"timestamp\"") && line.contains("\"level\"")
 }
 
-pub(crate) fn contains_runtime_crash_text(text: &str) -> bool {
+#[cfg(test)]
+fn contains_runtime_crash_text(text: &str) -> bool {
     extract_runtime_crash_text(text).is_some()
 }
 
 pub(crate) fn extract_runtime_crash_text(text: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     for (index, line) in lines.iter().enumerate() {
-        if starts_rust_panic_capture(line) || line.contains("failed with runtime error: RuntimeError:") {
+        if starts_rust_panic_capture(line) {
             return Some(collect_crash_block(&lines[index..]));
         }
         if starts_wasm_runtime_trap_header(line)
@@ -336,16 +337,26 @@ fn collect_runtime_trap(lines: &[&str]) -> String {
 fn starts_rust_panic_capture(line: &str) -> bool {
     // TODO: Not super bulletproof way to detect panics, maybe there is a better way?
     line.contains("panicked at")
+        || starts_native_assertion_capture(line)
         || line.contains("has overflowed its stack")
-        || line.contains("fatal runtime error:")
         || line.contains("thread caused non-unwinding panic")
         || line.contains("memory allocation of ")
         || line.contains("thread panicked while processing panic")
 }
 
+fn starts_native_assertion_capture(line: &str) -> bool {
+    line.contains("Assertion failed:")
+        && (line.contains("edgejs/src/")
+            || line.contains("/edgejs/")
+            || line.contains("edge_runtime_")
+            || line.contains("/deps/uv/")
+            || line.contains("libuv"))
+}
+
 fn starts_wasm_runtime_trap_header(line: &str) -> bool {
-    line.starts_with("RuntimeError: ")
+    line.trim_start().starts_with("RuntimeError: ")
         || line.contains("failed with runtime error: RuntimeError:")
+        || line.contains("error calling function: RuntimeError:")
 }
 
 fn is_wasm_runtime_trap_frame(line: &str) -> bool {
@@ -644,7 +655,7 @@ mod tests {
             "thread 'TokioTaskManager Thread Pool_thread_6' panicked at boom"
         ));
         assert!(contains_runtime_crash_text(
-            "fatal runtime error: stack overflow, aborting"
+            "thread '<unknown>' has overflowed its stack\nfatal runtime error: stack overflow, aborting"
         ));
     }
 
@@ -654,7 +665,37 @@ mod tests {
             "RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
         ));
         assert!(contains_runtime_crash_text(
-            "Thread 3 of process 1 failed with runtime error: RuntimeError: out of bounds memory access"
+            "Thread 3 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
+        ));
+        assert!(contains_runtime_crash_text(
+            "[callback trampoline] error calling function: RuntimeError: uncaught exception\n    at <unnamed> (<module>[552]:0xffffffff)\n"
+        ));
+    }
+
+    #[test]
+    fn runtime_crash_text_detects_assertion_aborts() {
+        let crash = extract_runtime_crash_text(
+            "Assertion failed: state->owning_thread == std::this_thread::get_id() && \"immediate/platform task APIs must run on the owning JS thread\" (/home/amin/projects/work/edgejs/src/edge_runtime_platform_v8.cc: AssertOwningThread: 134)\n/worker.sh: line 12: 123 Segmentation fault: 11 wasmer run\n",
+        )
+        .expect("assertion crash");
+        assert!(crash.contains("Assertion failed: state->owning_thread"));
+        assert!(crash.contains("edge_runtime_platform_v8.cc"));
+    }
+
+    #[test]
+    fn runtime_crash_text_ignores_plain_assertion_failed_text() {
+        assert!(!contains_runtime_crash_text(
+            "Assertion failed: this is guest test output, not a native EdgeJS abort\n"
+        ));
+    }
+
+    #[test]
+    fn runtime_crash_text_ignores_fatal_signal_without_crash_context() {
+        assert!(!contains_runtime_crash_text(
+            "Program recieved fatal signal: Aborted\n"
+        ));
+        assert!(!contains_runtime_crash_text(
+            "Program received fatal signal: Aborted\n"
         ));
     }
 
@@ -662,6 +703,13 @@ mod tests {
     fn runtime_crash_text_ignores_guest_runtime_error_without_stack() {
         assert!(!contains_runtime_crash_text(
             "RuntimeError: ffi_prep_cif_var failed\nTraceback detail\n"
+        ));
+    }
+
+    #[test]
+    fn runtime_crash_text_ignores_fatal_runtime_error_without_stack() {
+        assert!(!contains_runtime_crash_text(
+            "fatal runtime error: Rust cannot catch foreign exceptions, aborting\n"
         ));
     }
 
@@ -728,7 +776,9 @@ mod tests {
         script.push_str("line-$i");
         script.push_str("\\n\" 1>&2; i=$((i + 1)); done; exit 101");
         let err = run_process(
-            sh(&format!("printf \"thread 'main' panicked at boom\\n\" 1>&2; {script}")),
+            sh(&format!(
+                "printf \"thread 'main' panicked at boom\\n\" 1>&2; {script}"
+            )),
             |_, _| Ok(()),
         )
         .expect_err("panic");

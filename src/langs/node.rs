@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace};
+use super::{
+    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace,
+};
 use crate::process::{
-    ProcessError, ProcessSpec, extract_runtime_crash_text, ignore_stream, run_process,
-    write_stream,
+    ProcessError, ProcessSpec, extract_runtime_crash_text, ignore_stream, run_process, write_stream,
 };
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
@@ -182,7 +183,10 @@ impl NodeRunner {
                 .cloned()
                 .chain(parsed.keys().filter(|id| !job.tests.contains(*id)).cloned())
                 .map(|id| TestResult {
-                    status: parsed.get(&id).map(|entry| entry.status).unwrap_or(fallback),
+                    status: parsed
+                        .get(&id)
+                        .map(|entry| entry.status)
+                        .unwrap_or(fallback),
                     id,
                 })
                 .collect(),
@@ -367,36 +371,7 @@ fn node_crash_issue(result: &CurrentTapResult) -> Option<String> {
         return None;
     }
     let block = result.block.join("\n");
-    extract_node_wrapper_reported_wasmer_crash_text(&block)
-        .or_else(|| extract_runtime_crash_text(&block))
-        .map(|crash| format!("crash: {crash}"))
-}
-
-fn extract_node_wrapper_reported_wasmer_crash_text(text: &str) -> Option<String> {
-    text.lines()
-        .rev()
-        .find_map(normalize_node_wrapper_reported_wasmer_crash_text)
-}
-
-fn normalize_node_wrapper_reported_wasmer_crash_text(line: &str) -> Option<String> {
-    if !(line.contains("node-wrapper-") || line.contains("node_via_wasmer.sh")) {
-        return None;
-    }
-    let signal = [
-        "Segmentation fault",
-        "Trace/breakpoint trap",
-        "Aborted",
-        "Illegal instruction",
-        "Bus error",
-    ]
-    .into_iter()
-    .find(|signal| line.contains(signal))?;
-    let mut text = signal.to_string();
-    if line.contains("core dumped") {
-        text.push_str(" (core dumped)");
-    }
-    text.push('\n');
-    Some(text)
+    extract_runtime_crash_text(&block).map(|crash| format!("crash: {crash}"))
 }
 
 fn parse_tap_id(line: &str) -> Option<String> {
@@ -527,6 +502,7 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn batches_node_tests() {
@@ -637,7 +613,8 @@ not ok 1 parallel/test-crash.js
   severity: fail
   exitcode: 139
   stack: |-
-    /tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run --registry 'wasmer.io' --net '--experimental-napi' --volume '/tmp/checkout:/tmp/checkout' 'wasmer/edgejs' -- \"$@\"
+    RuntimeError: out of bounds memory access
+        at <unnamed> (<module>[9015]:0xffffffff)
   ...
 ",
         )
@@ -654,24 +631,7 @@ not ok 1 parallel/test-crash.js
     }
 
     #[test]
-    fn detects_node_wrapper_reported_wasmer_crash_text() {
-        assert_eq!(
-            extract_node_wrapper_reported_wasmer_crash_text(
-                "/tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run"
-            )
-            .as_deref(),
-            Some("Segmentation fault (core dumped)\n")
-        );
-        assert_eq!(
-            extract_node_wrapper_reported_wasmer_crash_text(
-                "AssertionError [ERR_ASSERTION]: ifError got unwanted exception"
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn node_crash_issue_keeps_only_wrapper_crash_text() {
+    fn node_crash_issue_ignores_wrapper_only_signal() {
         let issue = node_crash_issue(&CurrentTapResult {
             id: "parallel/test-crash.js".to_string(),
             status: Status::Fail,
@@ -685,13 +645,9 @@ not ok 1 parallel/test-crash.js
             ],
             exit_code: Some(139),
             expect_stack_line: false,
-        })
-        .expect("wrapper crash issue");
+        });
 
-        assert_eq!(
-            issue,
-            "crash: Segmentation fault (core dumped)\n"
-        );
+        assert_eq!(issue, None);
     }
 
     #[test]
@@ -726,6 +682,186 @@ not ok 1 parallel/test-assert.js
     }
 
     #[test]
+    #[ignore = "requires a full local Node log; set NODE_CRASH_AUDIT_LOG or keep test_node.log"]
+    fn node_crash_audit_log_matches_actionable_crashes() {
+        let path = std::env::var("NODE_CRASH_AUDIT_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_node.log"));
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read audit log {}: {error}", path.display()));
+        let normalized = normalize_node_audit_log(&text);
+        let blocks = collect_node_audit_blocks(&normalized);
+        let actual: BTreeSet<_> = blocks
+            .iter()
+            .filter_map(|(id, result)| node_crash_issue(result).map(|issue| (id.clone(), issue)))
+            .collect();
+        let expected: BTreeSet<_> = blocks
+            .iter()
+            .filter(|(_, result)| audit_block_expects_actionable_crash(result))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let actual_ids: BTreeSet<_> = actual.iter().map(|(id, _)| id.clone()).collect();
+
+        assert_eq!(
+            actual_ids,
+            expected,
+            "crash extractor output differs from actionable crash audit for {}",
+            path.display()
+        );
+        assert!(
+            !actual_ids.is_empty(),
+            "expected at least one captured crash"
+        );
+        assert!(
+            actual
+                .iter()
+                .any(|(_, issue)| issue.contains("RuntimeError:") || issue.contains("panicked at")),
+            "expected at least one runtime trap or Rust panic; captured={actual_ids:#?}"
+        );
+        for id in [
+            "async-hooks/test-async-await",
+            "parallel/test-http2-session-timeout",
+            "parallel/test-tls-write-error",
+        ] {
+            assert!(
+                !actual_ids.contains(id),
+                "non-actionable failure was captured as crash for {id}"
+            );
+        }
+        for (id, issue) in actual {
+            assert!(
+                issue.contains("panicked at")
+                    || issue.contains("edgejs/src/")
+                    || issue.contains("edgejs/deps/")
+                    || issue.contains("Program received fatal signal:")
+                    || issue.contains("Program recieved fatal signal:")
+                    || issue
+                        .contains("[callback trampoline] error calling function: RuntimeError:")
+                    || issue.contains("failed with runtime error: RuntimeError:")
+                    || issue.contains("RuntimeError: "),
+                "captured crash for {id} lacks actionable runtime/native context:\n{issue}"
+            );
+            assert!(
+                !issue.contains("WASI exited with code: ExitCode::0"),
+                "wrapper-only WASI exit was captured as crash for {id}:\n{issue}"
+            );
+            assert!(
+                !issue.contains("AssertionError [ERR_ASSERTION]"),
+                "guest assertion was captured as crash for {id}:\n{issue}"
+            );
+        }
+    }
+
+    fn normalize_node_audit_log(text: &str) -> String {
+        text.lines()
+            .map(|line| {
+                line.strip_prefix("[stdout] ")
+                    .or_else(|| line.strip_prefix("[stderr] "))
+                    .unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn collect_node_audit_blocks(text: &str) -> Vec<(String, CurrentTapResult)> {
+        let mut results = Vec::new();
+        let mut current = None;
+        for raw_line in text.lines() {
+            let line = raw_line.trim();
+            if let Some(id) = line.strip_prefix("ok ").and_then(parse_tap_id) {
+                flush_node_audit_block(&mut results, &mut current);
+                current = Some(CurrentTapResult {
+                    id,
+                    status: if line.contains(" # skip ") {
+                        Status::Skip
+                    } else {
+                        Status::Pass
+                    },
+                    block: vec![raw_line.to_string()],
+                    exit_code: None,
+                    expect_stack_line: false,
+                });
+                continue;
+            }
+            if let Some(id) = line.strip_prefix("not ok ").and_then(parse_tap_id) {
+                flush_node_audit_block(&mut results, &mut current);
+                current = Some(CurrentTapResult {
+                    id,
+                    status: Status::Fail,
+                    block: vec![raw_line.to_string()],
+                    exit_code: None,
+                    expect_stack_line: false,
+                });
+                continue;
+            }
+            if let Some(current) = current.as_mut() {
+                current.block.push(raw_line.to_string());
+                if current.expect_stack_line {
+                    if line == "timeout" {
+                        current.status = Status::Timeout;
+                    }
+                    current.expect_stack_line = false;
+                } else if line == "stack: |-" {
+                    current.expect_stack_line = true;
+                } else if let Some(exit_code) = line
+                    .strip_prefix("exitcode: ")
+                    .and_then(|value| value.trim().parse().ok())
+                {
+                    current.exit_code = Some(exit_code);
+                }
+            }
+            if line == "..." {
+                flush_node_audit_block(&mut results, &mut current);
+            }
+        }
+        flush_node_audit_block(&mut results, &mut current);
+        results
+    }
+
+    fn flush_node_audit_block(
+        results: &mut Vec<(String, CurrentTapResult)>,
+        current: &mut Option<CurrentTapResult>,
+    ) {
+        if let Some(current) = current.take() {
+            results.push((current.id.clone(), current));
+        }
+    }
+
+    fn audit_block_expects_actionable_crash(result: &CurrentTapResult) -> bool {
+        if result.status == Status::Timeout {
+            return false;
+        }
+        let lines: Vec<_> = result.block.iter().map(String::as_str).collect();
+        lines.iter().enumerate().any(|(index, line)| {
+            line.contains("panicked at")
+                || line.contains("has overflowed its stack")
+                || line.contains("thread caused non-unwinding panic")
+                || line.contains("memory allocation of ")
+                || line.contains("thread panicked while processing panic")
+                || is_native_assertion_audit_line(line)
+                || (is_runtime_trap_audit_header(line)
+                    && lines
+                        .get(index + 1)
+                        .is_some_and(|next| next.trim_start().starts_with("at ")))
+        })
+    }
+
+    fn is_native_assertion_audit_line(line: &str) -> bool {
+        line.contains("Assertion failed:")
+            && (line.contains("edgejs/src/")
+                || line.contains("/edgejs/")
+                || line.contains("edge_runtime_")
+                || line.contains("/deps/uv/")
+                || line.contains("libuv"))
+    }
+
+    fn is_runtime_trap_audit_header(line: &str) -> bool {
+        line.trim_start().starts_with("RuntimeError: ")
+            || line.contains("failed with runtime error: RuntimeError:")
+            || line.contains("error calling function: RuntimeError:")
+    }
+
+    #[test]
     fn wrapper_path_is_unique_per_job() {
         let workspace = Workspace {
             output_dir: PathBuf::from("/tmp/out"),
@@ -740,6 +876,9 @@ not ok 1 parallel/test-assert.js
             id: "node-batch-0002".into(),
             tests: vec!["b.js".into()],
         };
-        assert_ne!(NodeRunner::wrapper_path(&workspace, &a), NodeRunner::wrapper_path(&workspace, &b));
+        assert_ne!(
+            NodeRunner::wrapper_path(&workspace, &a),
+            NodeRunner::wrapper_path(&workspace, &b)
+        );
     }
 }
