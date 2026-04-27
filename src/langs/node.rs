@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -77,9 +79,19 @@ impl NodeRunner {
     }
 
     fn job_namespace(job: &TestJob) -> String {
+        static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
         let mut hasher = DefaultHasher::new();
         job.id.hash(&mut hasher);
         job.tests.hash(&mut hasher);
+        process::id().hash(&mut hasher);
+        RUN_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .hash(&mut hasher);
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .hash(&mut hasher);
         format!("compat-{:016x}", hasher.finish())
     }
 
@@ -88,6 +100,7 @@ impl NodeRunner {
         workspace: &Workspace,
         wasmer: &WasmerRuntime,
         job: &TestJob,
+        test_serial_id: &str,
     ) -> Result<PathBuf> {
         let path = Self::wrapper_path(workspace, job);
         if let Some(parent) = path.parent() {
@@ -99,7 +112,7 @@ impl NodeRunner {
             workspace,
             Self::OPTS.wasmer_package.expect("node package"),
             Self::OPTS.wasmer_flags,
-            &Self::job_namespace(job),
+            test_serial_id,
         )?;
         Ok(path)
     }
@@ -112,7 +125,8 @@ impl NodeRunner {
         mode: Mode,
         log: Option<&RunLog>,
     ) -> Result<TestRunOutput> {
-        let wrapper = self.ensure_wrapper(workspace, wasmer, job)?;
+        let test_serial_id = Self::job_namespace(job);
+        let wrapper = self.ensure_wrapper(workspace, wasmer, job, &test_serial_id)?;
         let test_dir = Self::test_dir(workspace);
         for id in &job.tests {
             let rel_test = workspace.checkout.join("test").join(id);
@@ -149,7 +163,7 @@ impl NodeRunner {
             ProcessSpec {
                 program: "python3".into(),
                 args,
-                env: vec![("TEST_SERIAL_ID".into(), Self::job_namespace(job).into())],
+                env: vec![("TEST_SERIAL_ID".into(), test_serial_id.into())],
                 cwd: workspace.checkout.clone(),
                 // Let Node's own timeout handler write a TAP result before we
                 // kill the whole harness process.
@@ -891,8 +905,12 @@ not ok 1 parallel/test-assert.js
             NodeRunner::wrapper_path(&workspace, &a),
             NodeRunner::wrapper_path(&workspace, &b)
         );
-        assert_ne!(NodeRunner::job_namespace(&a), NodeRunner::job_namespace(&b));
-        assert!(NodeRunner::job_namespace(&a).starts_with("compat-"));
-        assert!(!NodeRunner::job_namespace(&a).contains('/'));
+        let first = NodeRunner::job_namespace(&a);
+        let second = NodeRunner::job_namespace(&a);
+        let other_job = NodeRunner::job_namespace(&b);
+        assert_ne!(first, second);
+        assert_ne!(first, other_job);
+        assert!(first.starts_with("compat-"));
+        assert!(!first.contains('/'));
     }
 }
