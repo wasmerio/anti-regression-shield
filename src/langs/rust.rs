@@ -28,6 +28,7 @@ const WORKSPACE_ROOTS: &[(&str, &str)] = &[
     ("miri-test-cargo-miri", "src/tools/miri/test-cargo-miri"),
 ];
 const BUILD_ONLY_PACKAGES: &[&str] = &["proc_macro", "std", "std_detect", "test", "unwind"];
+const ROOT_BUILD_ONLY_PACKAGES: &[&str] = &["compiletest"];
 const LOCK_UPDATES: &[(&str, &str, &str)] = &[
     (".", "curl@0.4.49", "0.4.48"),
     (".", "getrandom@0.3.4", "0.3.3"),
@@ -1342,8 +1343,10 @@ fn parse_metadata_targets(
                 .map(|target| target.name)
                 .collect();
             RustTarget {
-                build_only: workspace == "library"
-                    && BUILD_ONLY_PACKAGES.contains(&package.name.as_str()),
+                build_only: (workspace == "library"
+                    && BUILD_ONLY_PACKAGES.contains(&package.name.as_str()))
+                    || (workspace == "root"
+                        && ROOT_BUILD_ONLY_PACKAGES.contains(&package.name.as_str())),
                 workspace: workspace.to_string(),
                 workspace_path: workspace_path.to_path_buf(),
                 package: package.name,

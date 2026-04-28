@@ -44,7 +44,7 @@ const NODE_SUFFIXES: &[&str] = &["js", "mjs", "cjs"];
 pub struct NodeRunner;
 
 impl NodeRunner {
-    const BATCH_SIZE: usize = 50;
+    const BATCH_SIZE: usize = 25;
 
     pub const OPTS: RunnerOpts = RunnerOpts {
         name: "node",
@@ -236,6 +236,12 @@ impl NodeRunner {
 impl LangRunner for NodeRunner {
     fn opts(&self) -> &'static RunnerOpts {
         &Self::OPTS
+    }
+
+    fn thread_count_multiplier(&self) -> usize {
+        // Node's suite is mostly IO-bound. Smaller batches reduce per-process
+        // accumulated state while extra workers keep total CI time bounded.
+        2
     }
 
     fn discover(
