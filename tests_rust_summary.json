@@ -11,11 +11,11 @@
   },
   "crashes": {
     "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-4543a88814e4fb8c.wasm[12989]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-4543a88814e4fb8c.wasm[12990]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-4543a88814e4fb8c.wasm[13007]:0xffffffff)\n",
-    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: Thread 13 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-7ea493aa4c91dc07.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-7ea493aa4c91dc07.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-7ea493aa4c91dc07.wasm[15825]:0xffffffff)\n\nthread '<unnamed>' panicked at compiler/rustc_thread_pool/src/job.rs:188:18:\nmisaligned pointer dereference: address must be a multiple of 0x4 but is 0x1\n"
+    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: thread '<unnamed>' panicked at compiler/rustc_thread_pool/src/job.rs:188:18:\nmisaligned pointer dereference: address must be a multiple of 0x4 but is 0x1\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nthread caused non-unwinding panic. aborting.\n"
   },
   "run": {
-    "finished_at": "2026-04-27T19:44:22Z",
-    "started_at": "2026-04-27T18:49:03Z"
+    "finished_at": "2026-04-28T04:14:53Z",
+    "started_at": "2026-04-28T03:19:56Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
