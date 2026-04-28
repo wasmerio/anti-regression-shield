@@ -3,19 +3,49 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 1003,
-    "FLAKY": 15,
-    "PASS": 20813,
-    "SKIP": 73,
+    "FAIL": 1156,
+    "FLAKY": 49,
+    "PASS": 21102,
+    "SKIP": 79,
     "TIMEOUT": 0
   },
   "crashes": {
-    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-4543a88814e4fb8c.wasm[12989]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-4543a88814e4fb8c.wasm[12990]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-4543a88814e4fb8c.wasm[13007]:0xffffffff)\n",
-    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: thread '<unnamed>' panicked at compiler/rustc_thread_pool/src/job.rs:188:18:\nmisaligned pointer dereference: address must be a multiple of 0x4 but is 0x1\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nthread caused non-unwinding panic. aborting.\n"
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::asm_support": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::channel": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::cross_compile": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::debugger": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::families": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::git_hash": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::ignore_arch": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::ignore_coverage": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::ignore_target": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::is_big_endian": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::llvm_version": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::matches_abi": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::matches_env": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::matches_os": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::only_target": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::pointer_width": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::profiler_runtime": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::rustc_debug_assertions": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::sanitizers": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::should_fail": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::stage": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::std_debug_assertions": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::system_llvm_version": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::test_ignore_auxiliary": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::test_needs_target_has_atomic": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::test_needs_target_std": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::test_rustc_abi": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::test_supported_crate_types": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::threads_support": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::compiletest::compiletest-96aab6afeb356a08::directives::tests::wasm_special": "crash: thread 'main' panicked at src/tools/compiletest/src/common.rs:1162:13:\nfatal error\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-69f87dbf04f21981.wasm[12949]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-69f87dbf04f21981.wasm[12950]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-69f87dbf04f21981.wasm[12967]:0xffffffff)\n",
+    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: Thread 14 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-e4a26b9bf7b3ed47.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-e4a26b9bf7b3ed47.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-e4a26b9bf7b3ed47.wasm[15825]:0xffffffff)\n"
   },
   "run": {
-    "finished_at": "2026-04-28T04:14:53Z",
-    "started_at": "2026-04-28T03:19:56Z"
+    "finished_at": "2026-04-28T13:33:42Z",
+    "started_at": "2026-04-28T11:40:20Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
