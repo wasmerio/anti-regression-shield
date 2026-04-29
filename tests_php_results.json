@@ -18839,7 +18839,7 @@
   "sapi/cli/tests/bug73630a.phpt": "FAIL",
   "sapi/cli/tests/bug74600.phpt": "PASS",
   "sapi/cli/tests/bug77561.phpt": "PASS",
-  "sapi/cli/tests/bug78323.phpt": "PASS",
+  "sapi/cli/tests/bug78323.phpt": "FAIL",
   "sapi/cli/tests/bug80092.phpt": "SKIP",
   "sapi/cli/tests/bug81305.phpt": "FAIL",
   "sapi/cli/tests/cli_get_process_title_basic.phpt": "SKIP",
