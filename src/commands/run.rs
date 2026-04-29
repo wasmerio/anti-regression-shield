@@ -25,7 +25,7 @@ use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, RuntimeSource, WasmerRuntime};
 
 const RETEST_TIMEOUT: Duration = Duration::from_secs(300);
-const RETEST_RUNS: usize = 3;
+const RETEST_RUNS: usize = 4;
 
 #[derive(Debug, Clone, ValueEnum)]
 #[value(rename_all = "lowercase")]
