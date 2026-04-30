@@ -18,6 +18,9 @@ const SKIPPED_TESTS: &[&str] = &[
     // invalid ru_utime.tv_usec values under WASIX, so this test randomly passes
     // or fails depending on whether the bogus value is positive or negative.
     "ext/standard/tests/general_functions/getrusage_basic.phpt",
+    // TODO(https://github.com/wasmerio/wasmer/issues/6530): ftruncate() on mounted
+    // host volumes can report success while leaving stale file contents behind.
+    "ext/spl/tests/SplFileObject/fileobject_005.phpt",
 ];
 
 pub struct PhpRunner;
@@ -689,6 +692,9 @@ mod tests {
     fn php_skips_known_unstable_tests() {
         assert!(PhpRunner::should_skip_test(
             "ext/standard/tests/general_functions/getrusage_basic.phpt"
+        ));
+        assert!(PhpRunner::should_skip_test(
+            "ext/spl/tests/SplFileObject/fileobject_005.phpt"
         ));
         assert!(!PhpRunner::should_skip_test("tests/basic/001.phpt"));
     }
