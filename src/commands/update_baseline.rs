@@ -152,10 +152,7 @@ fn baseline_change_kind(
 ) -> Result<ChangeKind> {
     let mut saw_improvement = false;
     for summary_file in files.iter().filter(|file| file.ends_with("_summary.json")) {
-        let runner = summary_file
-            .strip_prefix("tests_")
-            .and_then(|name| name.strip_suffix("_summary.json"))
-            .ok_or_else(|| anyhow::anyhow!("invalid summary filename: {summary_file}"))?;
+        let runner = runner_from_summary_file(summary_file)?;
         if !is_decision_runner(runner) {
             continue;
         }
@@ -192,6 +189,10 @@ fn summary_delta(
 ) -> Result<SummaryDelta> {
     let mut delta = SummaryDelta::default();
     for file in files.iter().filter(|file| file.ends_with("_summary.json")) {
+        let runner = runner_from_summary_file(file)?;
+        if !is_decision_runner(runner) {
+            continue;
+        }
         let new_metadata = load_metadata(&source_dir.join(file))?;
         let old_metadata = file_json(baseline_repo, baseline_ref, file)?.unwrap_or_default();
         delta.pass += count_delta(&old_metadata, &new_metadata, "PASS");
@@ -206,6 +207,12 @@ fn summary_delta(
 fn count_delta(old: &RunMetadata, new: &RunMetadata, key: &str) -> isize {
     new.counts.get(key).copied().unwrap_or_default() as isize
         - old.counts.get(key).copied().unwrap_or_default() as isize
+}
+
+fn runner_from_summary_file(file: &str) -> Result<&str> {
+    file.strip_prefix("tests_")
+        .and_then(|name| name.strip_suffix("_summary.json"))
+        .ok_or_else(|| anyhow::anyhow!("invalid summary filename: {file}"))
 }
 
 fn format_change_kind(kind: ChangeKind) -> &'static str {
@@ -353,6 +360,32 @@ mod tests {
                 .expect("change kind"),
             ChangeKind::NoChanges
         );
+    }
+
+    #[test]
+    fn node_regression_does_not_override_decisive_commit_message() {
+        let repo = TempDir::new("mixed-baseline-repo").expect("repo tempdir");
+        init_git_repo(repo.path());
+        write_runner_baseline_files(repo.path(), "node", 1, 0, "PASS");
+        write_runner_baseline_files(repo.path(), "php", 0, 1, "FAIL");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "baseline"]);
+
+        let candidate = TempDir::new("mixed-candidate-baseline").expect("candidate tempdir");
+        write_runner_baseline_files(candidate.path(), "node", 0, 1, "FAIL");
+        write_runner_baseline_files(candidate.path(), "php", 1, 0, "PASS");
+        let files = vec![
+            "tests_node_results.json".to_string(),
+            "tests_node_summary.json".to_string(),
+            "tests_php_results.json".to_string(),
+            "tests_php_summary.json".to_string(),
+        ];
+
+        let message =
+            commit_message_at_ref(repo.path(), "HEAD", candidate.path(), &files).expect("message");
+
+        assert_eq!(message.subject, "Baseline updated - IMPROVEMENT");
+        assert!(message.body.contains("Delta: PASS +1, FAIL -1"));
     }
 
     fn init_git_repo(repo: &Path) {
