@@ -13755,7 +13755,7 @@
   "ext/spl/tests/SplFileObject/fileobject_002.phpt": "PASS",
   "ext/spl/tests/SplFileObject/fileobject_003.phpt": "PASS",
   "ext/spl/tests/SplFileObject/fileobject_004.phpt": "PASS",
-  "ext/spl/tests/SplFileObject/fileobject_005.phpt": "FAIL",
+  "ext/spl/tests/SplFileObject/fileobject_005.phpt": "PASS",
   "ext/spl/tests/SplFileObject/fileobject_checktype_basic.phpt": "PASS",
   "ext/spl/tests/SplFileObject/fileobject_getbasename_basic.phpt": "PASS",
   "ext/spl/tests/SplFileObject/fileobject_getcurrentline_basic.phpt": "PASS",
