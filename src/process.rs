@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
@@ -64,12 +65,20 @@ enum ProcessEvent {
 }
 
 const PANIC_CAPTURE_LINE_LIMIT: usize = 40;
+static PROCESS_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 struct ProcessState {
+    context: ProcessContext,
     open_streams: usize,
     panic_capture: Option<PanicCapture>,
     pending_runtime_trap: Option<String>,
     timed_out: bool,
+}
+
+#[derive(Clone)]
+struct ProcessContext {
+    id: u64,
+    label: String,
 }
 
 struct PanicCapture {
@@ -102,7 +111,12 @@ where
     let (tx, rx) = mpsc::channel();
     let stdout_handle = spawn_reader(stdout, Stream::Stdout, tx.clone());
     let stderr_handle = spawn_reader(stderr, Stream::Stderr, tx);
+    let context = process_context(&spec);
+    let _ = spec
+        .log_output
+        .write_line("process", &format!("start {}", context.label));
     let mut state = ProcessState {
+        context,
         open_streams: 2,
         panic_capture: None,
         pending_runtime_trap: None,
@@ -149,6 +163,14 @@ where
     let status = child
         .wait()
         .map_err(|_| ProcessError::AbnormalExit("failed to wait for process".to_string()))?;
+    let _ = spec.log_output.write_line(
+        "process",
+        &format!(
+            "finish proc={:06} status={}",
+            state.context.id,
+            format_exit_status(status)
+        ),
+    );
     join_reader(stdout_handle)?;
     join_reader(stderr_handle)?;
     if let Some(err) = abort {
@@ -161,7 +183,10 @@ where
         )));
     }
     if let Some(capture) = state.panic_capture {
-        return Err(ProcessError::RustCrash(capture.text));
+        return Err(ProcessError::RustCrash(crash_text_with_context(
+            &state.context,
+            capture.text,
+        )));
     }
     if status.success() {
         return Ok(());
@@ -171,6 +196,84 @@ where
 
 fn format_exit_status(status: ExitStatus) -> String {
     status.to_string()
+}
+
+fn process_context(spec: &ProcessSpec) -> ProcessContext {
+    let id = PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    ProcessContext {
+        id,
+        label: format!(
+            "proc={id:06} cwd={} env={} command={}",
+            spec.cwd.display(),
+            format_env(&spec.env),
+            format_command(&spec.program, &spec.args),
+        ),
+    }
+}
+
+fn format_env(env: &[(OsString, OsString)]) -> String {
+    if env.is_empty() {
+        return "<empty>".to_string();
+    }
+    env.iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                key.to_string_lossy(),
+                shell_quote(&value.to_string_lossy())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_command(program: &PathBuf, args: &[OsString]) -> String {
+    let mut parts = vec![shell_quote(&program.display().to_string())];
+    let mut previous_was_inline_code_flag = false;
+    for arg in args {
+        let value = arg.to_string_lossy();
+        if previous_was_inline_code_flag {
+            parts.push(format!("<inline-code:{} chars>", value.chars().count()));
+        } else {
+            parts.push(shell_quote(&abbreviate_arg(&value)));
+        }
+        previous_was_inline_code_flag = value == "-c";
+    }
+    parts.join(" ")
+}
+
+fn abbreviate_arg(value: &str) -> String {
+    const MAX_ARG_CHARS: usize = 300;
+    if value.chars().count() <= MAX_ARG_CHARS {
+        return value.to_string();
+    }
+    let prefix: String = value.chars().take(120).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(80)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{prefix}...<{} chars>...{suffix}", value.chars().count())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn crash_text_with_context(context: &ProcessContext, text: String) -> String {
+    format!("process: {}\n{}", context.label, text)
 }
 
 fn spawn_process(
@@ -252,7 +355,7 @@ where
         capture.lines += 1;
     }
     log_output
-        .write_line(stream_name(stream), &line)
+        .write_line(&stream_name(state, stream), &line)
         .map_err(|_| ProcessError::AbnormalExit("failed to write process log".to_string()))?;
     on_line(stream, &line)
         .map_err(|_| ProcessError::AbnormalExit("process output callback failed".to_string()))?;
@@ -440,11 +543,12 @@ pub fn ignore_stream(_: Stream, _: &str) -> Result<()> {
     Ok(())
 }
 
-fn stream_name(stream: Stream) -> &'static str {
-    match stream {
+fn stream_name(state: &ProcessState, stream: Stream) -> String {
+    let name = match stream {
         Stream::Stdout => "stdout",
         Stream::Stderr => "stderr",
-    }
+    };
+    format!("{name} proc={:06}", state.context.id)
 }
 
 #[cfg(test)]
@@ -467,6 +571,13 @@ mod tests {
                     .join("default.log"),
             )),
         }
+    }
+
+    fn without_process_context(text: &str) -> &str {
+        text.strip_prefix("process: ")
+            .and_then(|text| text.split_once('\n'))
+            .map(|(_, crash)| crash)
+            .unwrap_or(text)
     }
 
     #[test]
@@ -515,8 +626,11 @@ mod tests {
         spec.log_output = Arc::new(RunLog::new(path.clone()));
         run_process(spec, |_, _| Ok(())).expect("run");
         let text = std::fs::read_to_string(path).expect("read log");
-        assert!(text.contains("[stdout] a"));
-        assert!(text.contains("[stderr] b"));
+        assert!(text.contains("[process] start proc="));
+        assert!(text.contains("[stdout proc="));
+        assert!(text.contains("] a"));
+        assert!(text.contains("[stderr proc="));
+        assert!(text.contains("] b"));
     }
 
     #[test]
@@ -528,7 +642,11 @@ mod tests {
         .expect_err("panic");
         match err {
             ProcessError::RustCrash(text) => {
-                assert_eq!(text, "thread 'main' panicked at boom\nnext\n")
+                assert!(text.starts_with("process: proc="));
+                assert_eq!(
+                    without_process_context(&text),
+                    "thread 'main' panicked at boom\nnext\n"
+                )
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -543,7 +661,10 @@ mod tests {
         .expect_err("panic");
         match err {
             ProcessError::RustCrash(text) => {
-                assert_eq!(text, "thread 'main' panicked at boom\nnext\n")
+                assert_eq!(
+                    without_process_context(&text),
+                    "thread 'main' panicked at boom\nnext\n"
+                )
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -609,7 +730,7 @@ mod tests {
         match err {
             ProcessError::RustCrash(text) => {
                 assert_eq!(
-                    text,
+                    without_process_context(&text),
                     "RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
                 );
             }
@@ -734,7 +855,10 @@ mod tests {
         .expect_err("panic");
         match err {
             ProcessError::RustCrash(text) => {
-                assert_eq!(text, "thread 'main' panicked at boom\nnext\n");
+                assert_eq!(
+                    without_process_context(&text),
+                    "thread 'main' panicked at boom\nnext\n"
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -749,7 +873,10 @@ mod tests {
         .expect_err("panic");
         match err {
             ProcessError::RustCrash(text) => {
-                assert_eq!(text, "thread 'main' panicked at boom\nFAIL detail\n");
+                assert_eq!(
+                    without_process_context(&text),
+                    "thread 'main' panicked at boom\nFAIL detail\n"
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -764,7 +891,10 @@ mod tests {
         .expect_err("panic");
         match err {
             ProcessError::RustCrash(text) => {
-                assert_eq!(text, "thread 'main' panicked at boom\n");
+                assert_eq!(
+                    without_process_context(&text),
+                    "thread 'main' panicked at boom\n"
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
