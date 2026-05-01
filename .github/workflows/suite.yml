@@ -49,6 +49,12 @@ jobs:
         with:
           path: .cache/${{ matrix.lang }}
           key: ${{ steps.cache-key.outputs.key }}
+      - run: >
+          cargo run --quiet -- validate
+          --runner ${{ matrix.lang }}
+          --wasmer-repo "https://github.com/${{ inputs.target_repo }}.git"
+          --wasmer-ref "${{ inputs.target_sha }}"
+          --compare-ref origin/main
       # TODO: Pass GH_TOKEN to enable fast path for downloading a prebuilt main binary for wasmer
       #       But keep in mind that it should only happen for non forks for security reasons
       - run: >

@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use crate::commands::pr_comment::{PrCommentArgs, pr_comment};
 use crate::commands::run::{RunArgs, run};
 use crate::commands::update_baseline::{UpdateBaselineArgs, update_baseline};
+use crate::commands::validate::{ValidateArgs, validate};
 
 #[derive(Parser)]
 #[command(
@@ -34,6 +35,8 @@ enum Command {
     UpdateBaseline(UpdateBaselineArgs),
     /// Render the PR comment body from comparison + metadata.
     PrComment(PrCommentArgs),
+    /// Validate that a run can be compared to the selected baseline.
+    Validate(ValidateArgs),
 }
 
 fn init_tracing() {
@@ -50,5 +53,6 @@ fn main() -> Result<()> {
         Command::Run(args) => run(args),
         Command::UpdateBaseline(args) => update_baseline(args),
         Command::PrComment(args) => pr_comment(args),
+        Command::Validate(args) => validate(args),
     }
 }
