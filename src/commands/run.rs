@@ -470,10 +470,7 @@ fn execute_tests(
                 jobs.len(),
                 runner.capture_thread_count_override().unwrap(),
             );
-            tracing::info!(
-                threads,
-                "using runner-specific fixed capture worker pool"
-            );
+            tracing::info!(threads, "using runner-specific fixed capture worker pool");
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()

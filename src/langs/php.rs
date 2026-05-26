@@ -30,6 +30,7 @@ pub struct PhpRunner;
 
 impl PhpRunner {
     const BATCH_SIZE: usize = 50;
+    const SINGLE_TEST_BATCH_PREFIXES: &[&str] = &["ext/opcache/tests/jit/"];
 
     pub const OPTS: RunnerOpts = RunnerOpts {
         name: "php",
@@ -195,13 +196,37 @@ impl PhpRunner {
     }
 
     fn batch_jobs(ids: Vec<String>) -> Vec<TestJob> {
-        ids.chunks(Self::BATCH_SIZE)
-            .enumerate()
-            .map(|(index, chunk)| TestJob {
-                id: format!("php-batch-{index:04}"),
-                tests: chunk.to_vec(),
-            })
-            .collect()
+        let mut jobs = Vec::new();
+        let mut index = 0usize;
+        let mut regular = Vec::new();
+
+        let flush_regular =
+            |regular: &mut Vec<String>, jobs: &mut Vec<TestJob>, index: &mut usize| {
+                for chunk in regular.chunks(Self::BATCH_SIZE) {
+                    jobs.push(TestJob {
+                        id: format!("php-batch-{index:04}"),
+                        tests: chunk.to_vec(),
+                    });
+                    *index += 1;
+                }
+                regular.clear();
+            };
+
+        for id in ids {
+            if Self::single_test_batch(&id) {
+                flush_regular(&mut regular, &mut jobs, &mut index);
+                jobs.push(TestJob {
+                    id: format!("php-batch-{index:04}"),
+                    tests: vec![id],
+                });
+                index += 1;
+            } else {
+                regular.push(id);
+            }
+        }
+
+        flush_regular(&mut regular, &mut jobs, &mut index);
+        jobs
     }
 
     fn batch_filter(filter: &str) -> Option<usize> {
@@ -213,6 +238,12 @@ impl PhpRunner {
     fn should_skip_test(id: &str) -> bool {
         SKIPPED_TESTS.contains(&id)
     }
+
+    fn single_test_batch(id: &str) -> bool {
+        Self::SINGLE_TEST_BATCH_PREFIXES
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+    }
 }
 
 impl LangRunner for PhpRunner {
@@ -221,9 +252,10 @@ impl LangRunner for PhpRunner {
     }
 
     fn capture_thread_count_override(&self) -> Option<usize> {
-        // PHP batches are memory-heavy enough that the default pool can get
-        // hosted runners killed mid-suite. Keep only two in flight for CI.
-        Some(2)
+        // PHP jobs can retain enough state across tests that even small JIT-heavy
+        // batches will push hosted runners over the memory limit when overlapped.
+        // Run a single PHP job at a time in CI.
+        Some(1)
     }
 
     fn prepare(
@@ -706,6 +738,22 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].tests.len(), 50);
         assert_eq!(selected[0].tests[0], "test-050.phpt");
+    }
+
+    #[test]
+    fn php_jit_tests_are_isolated_into_single_test_batches() {
+        let jobs = PhpRunner::batch_jobs(vec![
+            "Zend/tests/001.phpt".into(),
+            "ext/opcache/tests/jit/inc_014.phpt".into(),
+            "ext/opcache/tests/jit/inc_015.phpt".into(),
+            "Zend/tests/002.phpt".into(),
+        ]);
+
+        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs[0].tests, vec!["Zend/tests/001.phpt"]);
+        assert_eq!(jobs[1].tests, vec!["ext/opcache/tests/jit/inc_014.phpt"]);
+        assert_eq!(jobs[2].tests, vec!["ext/opcache/tests/jit/inc_015.phpt"]);
+        assert_eq!(jobs[3].tests, vec!["Zend/tests/002.phpt"]);
     }
 
     #[test]
