@@ -267,7 +267,7 @@ impl LangRunner for PythonRunner {
         _wasmer: &WasmerRuntime,
         _jobs: &[TestJob],
     ) -> Result<()> {
-        patch_faulthandler_workarounds(&Self::host_test_dir(workspace))
+        patch_test_workarounds(&Self::host_test_dir(workspace))
             .context("applying cpython test patches")
     }
 
@@ -543,7 +543,7 @@ fn finish_module_capture(
     })
 }
 
-fn patch_faulthandler_workarounds(testdir: &Path) -> Result<()> {
+fn patch_test_workarounds(testdir: &Path) -> Result<()> {
     type Edits = &'static [(&'static str, &'static str)];
     let replacements: &[(&str, Edits)] = &[
         (
@@ -620,6 +620,13 @@ fn patch_faulthandler_workarounds(testdir: &Path) -> Result<()> {
                     "        if exc.errno != errno.EBADF:\n",
                 ),
             ],
+        ),
+        (
+            "test_asyncio/test_base_events.py",
+            &[(
+                "        self.loop._selector.select.return_value = ()\n",
+                "        # WASIX needs an explicit yield here; otherwise the mocked\n        # selector can starve executor shutdown helper threads.\n        self.loop._selector.select.side_effect = lambda *args, **kwargs: (time.sleep(0), ())[1]\n",
+            )],
         ),
     ];
 

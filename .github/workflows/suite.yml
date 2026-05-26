@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         lang: [python, node, php, rust]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
     steps:
