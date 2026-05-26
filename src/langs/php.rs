@@ -24,6 +24,9 @@ const SKIPPED_TESTS: &[&str] = &[
     // TODO(https://github.com/wasmerio/wasmer/issues/6530): ftruncate() followed by
     // vfprintf() on a mounted host volume can panic in virtual-fs mem_fs writes.
     "ext/standard/tests/strings/vfprintf_variation1.phpt",
+    // TODO: this PHPT intentionally drives child PHP processes into controlled OOMs,
+    // but under Wasmer it can grow to multiple GiB and kill the whole runner instead.
+    "Zend/tests/new_oom.phpt",
 ];
 
 pub struct PhpRunner;
@@ -767,6 +770,7 @@ mod tests {
         assert!(PhpRunner::should_skip_test(
             "ext/standard/tests/strings/vfprintf_variation1.phpt"
         ));
+        assert!(PhpRunner::should_skip_test("Zend/tests/new_oom.phpt"));
         assert!(!PhpRunner::should_skip_test("tests/basic/001.phpt"));
     }
 
