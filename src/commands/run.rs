@@ -379,6 +379,10 @@ fn capture_thread_count(jobs: usize, multiplier: usize) -> usize {
         .min(num_cpus::get().saturating_mul(multiplier.max(1)))
 }
 
+fn capture_thread_count_override(jobs: usize, threads: usize) -> usize {
+    jobs.max(1).min(threads.max(1))
+}
+
 fn execute_tests(
     runner: &dyn LangRunner,
     workspace: &Workspace,
@@ -461,6 +465,21 @@ fn execute_tests(
         (results, errors)
     };
     let outcomes: Vec<(Vec<TestResult>, Vec<ItemError>)> = match mode {
+        Mode::Capture if runner.capture_thread_count_override().is_some() => {
+            let threads = capture_thread_count_override(
+                jobs.len(),
+                runner.capture_thread_count_override().unwrap(),
+            );
+            tracing::info!(
+                threads,
+                "using runner-specific fixed capture worker pool"
+            );
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| anyhow::anyhow!("build capture pool: {e}"))?;
+            pool.install(|| jobs.par_iter().map(run_one).collect())
+        }
         Mode::Capture if runner.thread_count_multiplier() > 1 => {
             let threads = capture_thread_count(jobs.len(), runner.thread_count_multiplier());
             tracing::info!(

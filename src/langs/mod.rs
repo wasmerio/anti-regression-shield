@@ -120,6 +120,11 @@ pub trait LangRunner: Send + Sync {
     fn thread_count_multiplier(&self) -> usize {
         1
     }
+
+    /// Optionally pins capture-mode parallelism to an exact worker count.
+    fn capture_thread_count_override(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[cfg(test)]

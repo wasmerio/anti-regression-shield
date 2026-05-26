@@ -220,6 +220,12 @@ impl LangRunner for PhpRunner {
         &Self::OPTS
     }
 
+    fn capture_thread_count_override(&self) -> Option<usize> {
+        // PHP batches are memory-heavy enough that the default pool can get
+        // hosted runners killed mid-suite. Keep only two in flight for CI.
+        Some(2)
+    }
+
     fn prepare(
         &self,
         workspace: &Workspace,
