@@ -36,8 +36,8 @@ impl PhpRunner {
         name: "php",
         git_repo: "https://github.com/wasix-org/php.git",
         git_ref: "6dd6dd1c7e409b8e9dcba8a8d6f9b7b5f944cc9e",
-        wasmer_package: Some("artembde9fd8b1a18420e/php-32-debug@8.3.2104"),
-        wasmer_package_warmup_args: Some(&["-r", "echo \"ok\\n\";"]),
+        wasmer_package: Some("phpix/phpix-83-32bit@0.2.0-rc.4"),
+        wasmer_package_warmup_args: Some(&["-v"]),
         wasmer_flags: &[],
         docker_compose: None,
     };
