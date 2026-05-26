@@ -10,18 +10,18 @@
     "TIMEOUT": 0
   },
   "crashes": {
-    "root::compiletest::compiletest-96aab6afeb356a08": "crash: process: proc=000172 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/015235308d49468a.wasmu -- --test-threads=1\nthread 'main' panicked at src/tools/compiletest/src/lib.rs:224:19:\nUnrecognizedOption(\"test-threads\")\nstack backtrace:\n",
-    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: process: proc=000114 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/44fb56b80fbe8be3.wasmu -- --test-threads=1\nThread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-92a765577620e255.wasm[12983]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-92a765577620e255.wasm[12984]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-92a765577620e255.wasm[13001]:0xffffffff)\n"
+    "root::compiletest::compiletest-96aab6afeb356a08": "crash: process: proc=000149 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/b83752ecfae716e6.wasmu -- --test-threads=1\nthread 'main' panicked at src/tools/compiletest/src/lib.rs:224:19:\nUnrecognizedOption(\"test-threads\")\nstack backtrace:\n",
+    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: process: proc=000124 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/c8debdd7befaa7bc.wasmu -- --test-threads=1\nThread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-92a765577620e255.wasm[12983]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-92a765577620e255.wasm[12984]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-92a765577620e255.wasm[13001]:0xffffffff)\n"
   },
   "run": {
-    "finished_at": "2026-05-21T04:32:40Z",
-    "started_at": "2026-05-21T03:22:47Z"
+    "finished_at": "2026-05-26T18:55:59Z",
+    "started_at": "2026-05-26T17:37:03Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
   },
   "wasmer": {
-    "commit": "4263a29798a884562904cb8a9e8643358957bfae",
+    "commit": "39bdf3646de17dca8aa428904c6b7754d5147a44",
     "ref": "main",
     "repo": "https://github.com/wasmerio/wasmer.git"
   }
