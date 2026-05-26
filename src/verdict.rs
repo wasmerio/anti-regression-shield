@@ -39,6 +39,8 @@ const LANGS: [LangConfig; 4] = [
     },
 ];
 
+const ACTIVE_LANGS: [&str; 3] = ["python", "node", "rust"];
+
 pub struct Verdict {
     pub body: String,
 }
@@ -108,6 +110,7 @@ pub fn build_verdict(
 ) -> Result<Verdict> {
     let languages = LANGS
         .into_iter()
+        .filter(|lang| ACTIVE_LANGS.contains(&lang.name))
         .map(|lang| collect_language_verdict(output_dir, lang, target_sha))
         .collect::<Result<Vec<_>>>()?;
     let kind = verdict_kind(&languages);
