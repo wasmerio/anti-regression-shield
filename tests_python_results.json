@@ -4331,7 +4331,7 @@
   "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_nonstream_socket": "PASS",
   "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_notint_count": "PASS",
   "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_notint_offset": "PASS",
-  "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_sock_sendfile_fallback": "FAIL",
+  "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_sock_sendfile_fallback": "PASS",
   "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_sock_sendfile_fallback_offset_and_count": "FAIL",
   "test.test_asyncio.test_base_events.BaseLoopSockSendfileTests.test_sock_sendfile_no_fallback": "FAIL",
   "test.test_asyncio.test_base_events.RunningLoopTests.test_running_loop_within_a_loop": "PASS",
