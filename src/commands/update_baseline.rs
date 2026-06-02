@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -5,7 +6,10 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use crate::git::file_json;
-use crate::reports::{RunMetadata, is_decision_runner, load_metadata, load_status};
+use crate::reports::{
+    RunMetadata, format_status_transitions, is_decision_runner, load_metadata, load_status,
+    merge_status_transitions, status_transitions,
+};
 use crate::verdict::{ChangeKind, classify_change_kind};
 
 const BASELINE_REF: &str = "HEAD";
@@ -105,6 +109,7 @@ struct SummaryDelta {
     timeout: isize,
     flaky: isize,
     crash: isize,
+    transitions: BTreeMap<String, usize>,
 }
 
 fn commit_message(source_dir: &Path, files: &[String]) -> Result<CommitMessage> {
@@ -200,6 +205,13 @@ fn summary_delta(
         delta.timeout += count_delta(&old_metadata, &new_metadata, "TIMEOUT");
         delta.flaky += count_delta(&old_metadata, &new_metadata, "FLAKY");
         delta.crash += new_metadata.crashes.len() as isize - old_metadata.crashes.len() as isize;
+        let results_file = format!("tests_{runner}_results.json");
+        let old_status = file_json(baseline_repo, baseline_ref, &results_file)?.unwrap_or_default();
+        let new_status = load_status(&source_dir.join(&results_file))?;
+        merge_status_transitions(
+            &mut delta.transitions,
+            &status_transitions(&old_status, &new_status),
+        );
     }
     Ok(delta)
 }
@@ -224,10 +236,14 @@ fn format_change_kind(kind: ChangeKind) -> &'static str {
 }
 
 fn format_delta(delta: &SummaryDelta) -> String {
-    format!(
+    let mut lines = vec![format!(
         "Delta: PASS {:+}, FAIL {:+}, TIMEOUT {:+}, FLAKY {:+}, CRASHES {:+}",
         delta.pass, delta.fail, delta.timeout, delta.flaky, delta.crash
-    )
+    )];
+    if !delta.transitions.is_empty() {
+        lines.push(format_status_transitions(&delta.transitions));
+    }
+    lines.join("\n")
 }
 
 fn checkout_branch(branch: &str) -> Result<()> {
@@ -278,6 +294,8 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use std::collections::BTreeMap;
+
     use tempdir::TempDir;
 
     use super::{
@@ -309,8 +327,27 @@ mod tests {
                 timeout: 0,
                 flaky: 1,
                 crash: -3,
+                transitions: BTreeMap::new(),
             }),
             "Delta: PASS +4, FAIL -2, TIMEOUT +0, FLAKY +1, CRASHES -3"
+        );
+    }
+
+    #[test]
+    fn formats_status_transitions_in_delta_summary() {
+        let mut transitions = BTreeMap::new();
+        transitions.insert("FAIL->PASS".to_string(), 200);
+        transitions.insert("PASS->FAIL".to_string(), 100);
+        assert_eq!(
+            format_delta(&SummaryDelta {
+                pass: 100,
+                fail: -100,
+                timeout: 0,
+                flaky: 0,
+                crash: 0,
+                transitions,
+            }),
+            "Delta: PASS +100, FAIL -100, TIMEOUT +0, FLAKY +0, CRASHES +0\nFAIL->PASS:200, PASS->FAIL:100"
         );
     }
 
@@ -338,6 +375,7 @@ mod tests {
 
         assert_eq!(message.subject, "Baseline updated - REGRESSION");
         assert!(message.body.contains("Delta: PASS -1, FAIL +1"));
+        assert!(message.body.contains("PASS->FAIL:1"));
     }
 
     #[test]
@@ -386,6 +424,7 @@ mod tests {
 
         assert_eq!(message.subject, "Baseline updated - IMPROVEMENT");
         assert!(message.body.contains("Delta: PASS +1, FAIL -1"));
+        assert!(message.body.contains("FAIL->PASS:1"));
     }
 
     fn init_git_repo(repo: &Path) {

@@ -6,9 +6,9 @@ use anyhow::{Result, bail};
 
 use crate::langs::Status;
 use crate::reports::{
-    RunMetadata, RunRegressions, is_decision_runner, load_metadata, load_metadata_at_ref,
-    load_regressions, load_status, load_status_at_ref, test_regressions_filename,
-    test_results_filename, test_summary_filename,
+    RunMetadata, RunRegressions, format_status_transitions, is_decision_runner, load_metadata,
+    load_metadata_at_ref, load_regressions, load_status, load_status_at_ref, status_transitions,
+    test_regressions_filename, test_results_filename, test_summary_filename,
 };
 
 const COMPARE_REF: &str = "origin/main";
@@ -69,6 +69,7 @@ struct LanguageVerdict {
     delta_timeout: isize,
     delta_skip: isize,
     delta_crash: isize,
+    transitions: BTreeMap<String, usize>,
     improvements: Vec<TestChange>,
     regressions: Vec<TestChange>,
     crash_example: Option<CrashExample>,
@@ -161,6 +162,11 @@ fn collect_language_verdict(
         delta_timeout: count_delta(&baseline_metadata, &metadata, "TIMEOUT"),
         delta_skip: count_delta(&baseline_metadata, &metadata, "SKIP"),
         delta_crash: crash_count(&metadata) as isize - crash_count(&baseline_metadata) as isize,
+        transitions: if metadata.transitions.is_empty() {
+            status_transitions(&baseline_status, &status)
+        } else {
+            metadata.transitions.clone()
+        },
         improvements,
         regressions,
         crash_example,
@@ -519,6 +525,24 @@ fn render_table(body: &mut String, languages: &[LanguageVerdict]) {
             color_delta(DeltaKind::Crash, lang.delta_crash),
         );
     }
+    render_transitions(body, languages);
+}
+
+fn render_transitions(body: &mut String, languages: &[LanguageVerdict]) {
+    let rows: Vec<_> = languages
+        .iter()
+        .filter(|lang| !lang.transitions.is_empty())
+        .map(|lang| (lang.config.label, format_status_transitions(&lang.transitions)))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    let _ = writeln!(body);
+    let _ = writeln!(body, "| Language | Status transitions |");
+    let _ = writeln!(body, "| -------- | ------------------ |");
+    for (label, transitions) in rows {
+        let _ = writeln!(body, "| {label} | {transitions} |");
+    }
 }
 
 fn render_more_changed_tests(
@@ -697,6 +721,24 @@ mod tests {
     }
 
     #[test]
+    fn status_transitions_counts_each_changed_test() {
+        let mut baseline = BTreeMap::new();
+        baseline.insert("a".to_string(), Status::Pass);
+        baseline.insert("b".to_string(), Status::Fail);
+        baseline.insert("c".to_string(), Status::Pass);
+
+        let mut candidate = BTreeMap::new();
+        candidate.insert("a".to_string(), Status::Fail);
+        candidate.insert("b".to_string(), Status::Pass);
+        candidate.insert("c".to_string(), Status::Pass);
+
+        let transitions = status_transitions(&baseline, &candidate);
+        assert_eq!(transitions.get("PASS->FAIL"), Some(&1));
+        assert_eq!(transitions.get("FAIL->PASS"), Some(&1));
+        assert_eq!(transitions.len(), 2);
+    }
+
+    #[test]
     fn flaky_count_is_not_included_in_total_tests_or_pass_rate() {
         let mut metadata = RunMetadata::default();
         metadata.counts = [
@@ -732,6 +774,7 @@ mod tests {
                 delta_timeout: -788,
                 delta_skip: 455,
                 delta_crash: 0,
+                transitions: transitions([("FAIL->PASS", 2), ("TIMEOUT->PASS", 3)]),
                 improvements: vec![
                     change(
                         "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later",
@@ -773,6 +816,7 @@ mod tests {
                 delta_timeout: -2,
                 delta_skip: 0,
                 delta_crash: 0,
+                transitions: transitions([("FAIL->PASS", 3), ("TIMEOUT->PASS", 2)]),
                 improvements: vec![
                     change("parallel/test-fs-stat.js", Status::Fail, Status::Pass),
                     change(
@@ -810,6 +854,7 @@ mod tests {
                 delta_timeout: 0,
                 delta_skip: 0,
                 delta_crash: 0,
+                transitions: transitions([("FAIL->PASS", 4), ("TIMEOUT->PASS", 1)]),
                 improvements: vec![
                     change(
                         "ext/standard/tests/strings/trim_basic.phpt",
@@ -851,6 +896,7 @@ mod tests {
                 delta_timeout: 0,
                 delta_skip: 0,
                 delta_crash: 0,
+                transitions: transitions([("FAIL->PASS", 4), ("TIMEOUT->PASS", 1)]),
                 improvements: vec![
                     change(
                         "env::home_dir_with_relative_input",
@@ -893,6 +939,7 @@ mod tests {
                 delta_timeout: 3,
                 delta_skip: 0,
                 delta_crash: 0,
+                transitions: transitions([("PASS->FAIL", 1)]),
                 improvements: vec![],
                 regressions: vec![change(
                     "test.test_shutil.TestMove.test_move_symlink_to_file",
@@ -927,6 +974,7 @@ mod tests {
                 delta_timeout: 1,
                 delta_skip: 0,
                 delta_crash: 0,
+                transitions: transitions([("PASS->FAIL", 1)]),
                 improvements: vec![],
                 regressions: vec![change(
                     "parallel/test-fs-symlink.js",
@@ -961,6 +1009,7 @@ mod tests {
                 delta_timeout: -10,
                 delta_skip: 0,
                 delta_crash: 3,
+                transitions: transitions([("PASS->FAIL", 1)]),
                 improvements: vec![],
                 regressions: vec![change(
                     "ext/standard/tests/file/rename_variation5.phpt",
@@ -993,12 +1042,20 @@ mod tests {
                 delta_timeout: 0,
                 delta_skip: 0,
                 delta_crash: 0,
+                transitions: BTreeMap::new(),
                 improvements: vec![],
                 regressions: vec![],
                 crash_example: None,
                 failure_example: None,
             },
         ]
+    }
+
+    fn transitions<const N: usize>(pairs: [(&str, usize); N]) -> BTreeMap<String, usize> {
+        pairs
+            .into_iter()
+            .map(|(key, count)| (key.to_string(), count))
+            .collect()
     }
 
     fn change(id: &str, before: Status, after: Status) -> TestChange {
