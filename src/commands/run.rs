@@ -306,6 +306,7 @@ fn run_with_runner(
             runner_commit: opts.git_ref,
             started_at,
             flaky_count,
+            compare_ref: &args.compare_ref,
         },
     )?;
     Ok(report)
@@ -1076,6 +1077,7 @@ mod tests {
                 runner_commit: MockRunner::OPTS.git_ref,
                 started_at: "1970-01-01T00:00:00Z",
                 flaky_count: 0,
+                compare_ref: "",
             },
         )
         .expect("finalize");
@@ -1251,6 +1253,7 @@ mod tests {
                 runner_commit: MockRunner::OPTS.git_ref,
                 started_at: "1970-01-01T00:00:00Z",
                 flaky_count: 0,
+                compare_ref: "",
             },
         )
         .expect("finalize");
@@ -1260,6 +1263,82 @@ mod tests {
         )
         .expect("parse metadata");
         assert!(metadata["crashes"]["php-batch-0294"].is_null());
+        assert_eq!(metadata["transitions"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn finalize_run_records_status_transitions() {
+        use std::process::Command;
+
+        let dir = TempDir::new("shield-run-transitions").expect("tempdir");
+        let repo = dir.path();
+        assert!(Command::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .status()
+            .expect("git init")
+            .success());
+        fs::write(
+            repo.join(test_results_filename("mock")),
+            "{\n  \"test_a\": \"PASS\"\n}\n",
+        )
+        .expect("write baseline results");
+        assert!(Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo)
+            .status()
+            .expect("git add")
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-c",
+                "user.email=shield@test",
+                "-c",
+                "user.name=shield",
+                "commit",
+                "-m",
+                "baseline",
+            ])
+            .current_dir(repo)
+            .status()
+            .expect("git commit")
+            .success());
+
+        let workspace = Workspace {
+            output_dir: repo.to_path_buf(),
+            checkout: repo.to_path_buf(),
+            work_dir: repo.to_path_buf(),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            repo,
+            Duration::ZERO,
+            Arc::new(RunLog::new(repo.join("process.log"))),
+        )
+        .expect("resolve");
+
+        finalize_run(
+            &workspace,
+            &wasmer.identity,
+            BTreeMap::from([("test_a".to_string(), Status::Fail)]),
+            &[],
+            RunConfig {
+                timeout: Duration::from_secs(30),
+                runner_name: MockRunner::OPTS.name,
+                runner_commit: MockRunner::OPTS.git_ref,
+                started_at: "1970-01-01T00:00:00Z",
+                flaky_count: 0,
+                compare_ref: "HEAD",
+            },
+        )
+        .expect("finalize");
+
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &fs::read(repo.join(test_summary_filename("mock"))).expect("metadata"),
+        )
+        .expect("parse metadata");
+        assert_eq!(metadata["transitions"]["PASS->FAIL"], 1);
+        assert_eq!(metadata["config"]["compare_ref"], "HEAD");
     }
 
     #[test]

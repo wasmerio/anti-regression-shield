@@ -25,6 +25,8 @@ pub struct RunMetadata {
     #[serde(default)]
     pub counts: BTreeMap<String, usize>,
     #[serde(default)]
+    pub transitions: BTreeMap<String, usize>,
+    #[serde(default)]
     pub crashes: BTreeMap<String, String>,
 }
 
@@ -78,6 +80,7 @@ pub struct RunConfig<'a> {
     pub runner_commit: &'a str,
     pub started_at: &'a str,
     pub flaky_count: usize,
+    pub compare_ref: &'a str,
 }
 
 pub fn finalize_run(
@@ -100,6 +103,9 @@ pub fn finalize_run(
 
     let mut counts = counts_from_status(&status);
     counts.insert("FLAKY".to_string(), config.flaky_count);
+    let baseline_status =
+        load_status_at_ref(&workspace.output_dir, config.compare_ref, config.runner_name)?;
+    let transitions = status_transitions(&baseline_status, &status);
     let mut runner_metadata = serde_json::Map::new();
     runner_metadata.insert("commit".to_string(), json!(config.runner_commit));
     let metadata = json!({
@@ -111,12 +117,14 @@ pub fn finalize_run(
         (config.runner_name): runner_metadata,
         "config": {
             "timeout_seconds": config.timeout.as_secs(),
+            "compare_ref": config.compare_ref,
         },
         "run": {
             "started_at": config.started_at,
             "finished_at": now_utc(),
         },
         "counts": counts,
+        "transitions": transitions,
         "crashes": crash_messages(errors),
     });
     write_json(
@@ -125,7 +133,7 @@ pub fn finalize_run(
             .join(test_summary_filename(config.runner_name)),
         &metadata,
     )?;
-    tracing::info!(counts = ?counts, errors = errors.len(), "done");
+    tracing::info!(counts = ?counts, transitions = ?transitions, errors = errors.len(), "done");
     Ok(())
 }
 
@@ -186,6 +194,41 @@ pub fn load_regressions(path: &Path) -> Result<RunRegressions> {
 
 pub fn write_regressions(path: &Path, regressions: &RunRegressions) -> Result<()> {
     write_json(path, regressions)
+}
+
+pub fn status_transitions(
+    baseline: &BTreeMap<String, Status>,
+    candidate: &BTreeMap<String, Status>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for (id, before) in baseline {
+        let Some(after) = candidate.get(id) else {
+            continue;
+        };
+        if before == after {
+            continue;
+        }
+        let key = format!("{before}->{after}");
+        *counts.entry(key).or_default() += 1;
+    }
+    counts
+}
+
+pub fn merge_status_transitions(
+    into: &mut BTreeMap<String, usize>,
+    transitions: &BTreeMap<String, usize>,
+) {
+    for (key, count) in transitions {
+        *into.entry(key.clone()).or_default() += count;
+    }
+}
+
+pub fn format_status_transitions(transitions: &BTreeMap<String, usize>) -> String {
+    transitions
+        .iter()
+        .map(|(transition, count)| format!("{transition}:{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn load_metadata_at_ref(
