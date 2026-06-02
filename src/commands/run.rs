@@ -1,10 +1,11 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
@@ -61,14 +62,22 @@ pub struct RunArgs {
     #[arg(long)]
     pub wasmer_ref: Option<String>,
 
-    /// Per-process timeout used for Wasmer invocations. It is NOT a timeout per unit
-    /// test as often tests runs in modules which may contain many unit tests inside
+    /// Timeout for each Wasmer test process. Debug filters usually run one test
+    /// per process; capture mode may run one module or batch per process.
     #[arg(long, value_parser = humantime::parse_duration, default_value = "10m")]
     pub timeout: Duration,
 
     /// Git ref used to load baseline language-specific status file for stabilization/comparison.
     #[arg(long, default_value = "origin/main")]
     pub compare_ref: String,
+
+    /// Write live CSV test results to this file.
+    #[arg(long, value_name = "FILE")]
+    pub csv: Option<PathBuf>,
+
+    /// Merge live CSV test results with an existing CSV file.
+    #[arg(long, value_name = "FILE", requires = "csv")]
+    pub merge: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -98,6 +107,69 @@ type StabilizedChange = (
 impl StatusCounts {
     pub fn increment(&mut self, status: Status) {
         *self.0.entry(status).or_insert(0) += 1;
+    }
+}
+
+struct CsvResultWriter {
+    path: PathBuf,
+    state: Mutex<CsvResultState>,
+}
+
+struct CsvResultState {
+    columns: Vec<String>,
+    rows: BTreeMap<(String, String), Vec<String>>,
+}
+
+impl CsvResultWriter {
+    fn open(
+        output_dir: &Path,
+        path: &Path,
+        merge: Option<&Path>,
+        started_at: &str,
+    ) -> Result<Self> {
+        let path = resolve_output_path(output_dir, path);
+        let (mut columns, rows) = match merge {
+            Some(merge) => read_csv_results(&resolve_output_path(output_dir, merge))?,
+            None => (Vec::new(), BTreeMap::new()),
+        };
+        columns.push(excel_datetime(started_at));
+        let writer = Self {
+            path,
+            state: Mutex::new(CsvResultState { columns, rows }),
+        };
+        writer.rewrite()?;
+        Ok(writer)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn write_result(&self, suite: &str, result: &TestResult) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("csv result writer lock poisoned"))?;
+        let column_count = state.columns.len();
+        let values = state
+            .rows
+            .entry((suite.to_string(), result.id.clone()))
+            .or_insert_with(|| vec![String::new(); column_count]);
+        if values.len() < column_count {
+            values.resize(column_count, String::new());
+        }
+        if let Some(value) = values.last_mut() {
+            *value = result.status.to_string();
+        }
+        write_csv_results(&self.path, &state.columns, &state.rows)
+    }
+
+    fn rewrite(&self) -> Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("csv result writer lock poisoned"))?;
+        write_csv_results(&self.path, &state.columns, &state.rows)
     }
 }
 
@@ -173,14 +245,31 @@ fn run_with_runner(
     }
 
     warmup_package(runner, &wasmer).map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
+    let csv = args
+        .csv
+        .as_deref()
+        .map(|path| {
+            CsvResultWriter::open(
+                &workspace.output_dir,
+                path,
+                args.merge.as_deref(),
+                started_at,
+            )
+        })
+        .transpose()?;
+    if let Some(csv) = &csv {
+        tracing::info!(path = %csv.path().display(), "writing csv test results");
+    }
 
     let report = execute_tests(
         runner,
         &workspace,
         &wasmer,
         log.as_deref(),
+        csv.as_ref(),
         args.filter.as_deref(),
         mode,
+        args.timeout,
     )?;
 
     if matches!(mode, Mode::Debug) {
@@ -388,8 +477,10 @@ fn execute_tests(
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
     log: Option<&RunLog>,
+    csv: Option<&CsvResultWriter>,
     filter: Option<&str>,
     mode: Mode,
+    timeout: Duration,
 ) -> Result<ExecutionReport> {
     let cache_path = workspace
         .output_dir
@@ -415,10 +506,16 @@ fn execute_tests(
     }
     runner.prepare(workspace, wasmer, &jobs)?;
     let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
+    tracing::info!(
+        tests = total_tests,
+        timeout = %humantime::format_duration(timeout),
+        "running tests"
+    );
     let completed_tests = AtomicUsize::new(0);
-    let run_one = |job: &TestJob| -> (Vec<TestResult>, Vec<ItemError>) {
+    let run_one = |job: &TestJob| -> Result<(Vec<TestResult>, Vec<ItemError>)> {
         if matches!(mode, Mode::Debug) {
-            println!("\n=== {} ===", job.id);
+            let ordinal = completed_tests.fetch_add(job.tests.len(), Ordering::Relaxed) + 1;
+            println!("\n{}", debug_job_header(job, ordinal, total_tests, timeout));
         }
         if matches!(mode, Mode::Capture) {
             tracing::info!(job = job.id, tests = job.tests.len(), "running test job");
@@ -449,12 +546,19 @@ fn execute_tests(
                 }],
             ),
         };
+        if let Some(csv) = csv {
+            for result in &results {
+                csv.write_result(&suite_for_result(runner, job, result), result)?;
+            }
+        }
         if matches!(mode, Mode::Capture) {
             for result in &results {
                 let completed = completed_tests.fetch_add(1, Ordering::Relaxed) + 1;
                 tracing::info!(
                     completed,
                     total = total_tests,
+                    progress = %format!("{completed}/{total_tests}"),
+                    timeout = %humantime::format_duration(timeout),
                     remaining = total_tests.saturating_sub(completed),
                     test = result.id,
                     status = %result.status,
@@ -462,9 +566,9 @@ fn execute_tests(
                 );
             }
         }
-        (results, errors)
+        Ok((results, errors))
     };
-    let outcomes: Vec<(Vec<TestResult>, Vec<ItemError>)> = match mode {
+    let outcomes: Vec<Result<(Vec<TestResult>, Vec<ItemError>)>> = match mode {
         Mode::Capture if runner.capture_thread_count_override().is_some() => {
             let threads = capture_thread_count_override(
                 jobs.len(),
@@ -496,7 +600,8 @@ fn execute_tests(
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut counts = StatusCounts(HashMap::new());
-    for (tests, issues) in outcomes {
+    for outcome in outcomes {
+        let (tests, issues) = outcome?;
         for r in tests {
             counts.increment(r.status);
             results.push(r);
@@ -673,6 +778,171 @@ fn results_by_id(results: &[TestResult]) -> BTreeMap<String, Status> {
         .collect()
 }
 
+fn resolve_output_path(output_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        output_dir.join(path)
+    }
+}
+
+fn excel_datetime(started_at: &str) -> String {
+    let Some((date, rest)) = started_at.split_once('T') else {
+        return started_at.to_string();
+    };
+    let time = rest.trim_end_matches('Z');
+    format!("{date} {}", time.split('.').next().unwrap_or(time))
+}
+
+fn read_csv_results(path: &Path) -> Result<(Vec<String>, BTreeMap<(String, String), Vec<String>>)> {
+    let content = fs::read_to_string(path)?;
+    let mut lines = content.lines();
+    let Some(header) = lines.next() else {
+        bail!("merge csv {} is empty", path.display());
+    };
+    let header = parse_csv_record(header)?;
+    if header.len() < 2 || header[0] != "suite" || header[1] != "test" {
+        bail!(
+            "merge csv {} must start with suite,test columns",
+            path.display()
+        );
+    }
+
+    let columns = header[2..].to_vec();
+    let mut rows = BTreeMap::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut fields = parse_csv_record(line)?;
+        if fields.len() < 2 {
+            bail!(
+                "merge csv {} has a row with fewer than 2 fields",
+                path.display()
+            );
+        }
+        let suite = fields.remove(0);
+        let test = fields.remove(0);
+        fields.resize(columns.len(), String::new());
+        rows.insert((suite, test), fields);
+    }
+    Ok((columns, rows))
+}
+
+fn write_csv_results(
+    path: &Path,
+    columns: &[String],
+    rows: &BTreeMap<(String, String), Vec<String>>,
+) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    write_csv_field(&mut file, "suite")?;
+    write!(file, ", ")?;
+    write_csv_field(&mut file, "test")?;
+    for column in columns {
+        write!(file, ", ")?;
+        write_csv_field(&mut file, column)?;
+    }
+    writeln!(file)?;
+    for ((suite, test), values) in rows {
+        write_csv_field(&mut file, suite)?;
+        write!(file, ", ")?;
+        write_csv_field(&mut file, test)?;
+        for index in 0..columns.len() {
+            write!(file, ", ")?;
+            write_csv_field(&mut file, values.get(index).map_or("", String::as_str))?;
+        }
+        writeln!(file)?;
+    }
+    file.flush()?;
+    Ok(())
+}
+
+fn parse_csv_record(line: &str) -> Result<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                field.push('"');
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                fields.push(field.trim().to_string());
+                field.clear();
+            }
+            _ => field.push(c),
+        }
+    }
+    if quoted {
+        bail!("unterminated quoted csv field");
+    }
+    fields.push(field.trim().to_string());
+    Ok(fields)
+}
+
+fn suite_for_result(runner: &dyn LangRunner, job: &TestJob, result: &TestResult) -> String {
+    if job.tests.len() > 1 || job.id != result.id {
+        return job.id.clone();
+    }
+    if runner.opts().name == "python" {
+        return python_suite_for_test(&result.id).unwrap_or_else(|| job.id.clone());
+    }
+    job.id.clone()
+}
+
+fn python_suite_for_test(id: &str) -> Option<String> {
+    if !id.starts_with("test.") {
+        return None;
+    }
+    if let Some((prefix_end, _)) = id.match_indices('.').nth(1) {
+        return Some(id[..prefix_end].to_string());
+    }
+    Some(id.to_string())
+}
+
+fn write_csv_field<W: Write>(writer: &mut W, value: &str) -> std::io::Result<()> {
+    if value.contains([',', '"', '\n', '\r', ' ']) {
+        write!(writer, "\"")?;
+        for c in value.chars() {
+            if c == '"' {
+                write!(writer, "\"\"")?;
+            } else {
+                write!(writer, "{c}")?;
+            }
+        }
+        write!(writer, "\"")
+    } else {
+        write!(writer, "{value}")
+    }
+}
+
+fn debug_job_header(
+    job: &TestJob,
+    ordinal: usize,
+    total_tests: usize,
+    timeout: Duration,
+) -> String {
+    let timeout = humantime::format_duration(timeout);
+    if job.tests.len() <= 1 {
+        return format!(
+            "=== {ordinal}/{total_tests} timeout={timeout}: {} ===",
+            job.id
+        );
+    }
+    let end = ordinal + job.tests.len() - 1;
+    format!(
+        "=== {ordinal}-{end}/{total_tests} timeout={timeout}: {} ===",
+        job.id
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,7 +974,9 @@ mod tests {
             &wasmer.runtime,
             None,
             None,
+            None,
             Mode::Capture,
+            Duration::from_secs(30),
         )
         .expect("execute_tests should succeed");
 
@@ -770,8 +1042,10 @@ mod tests {
             &workspace,
             &wasmer.runtime,
             None,
+            None,
             Some("panic"),
             Mode::Capture,
+            Duration::from_secs(30),
         )
         .expect("execute_tests should succeed");
 
@@ -819,6 +1093,131 @@ mod tests {
         .expect("parse metadata");
         let error = metadata["crashes"]["panic_g"].as_str().expect("job crash");
         assert!(error.contains("crash: fatal runtime error: stack overflow, aborting"));
+    }
+
+    #[test]
+    fn execute_tests_writes_csv_results() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = TempDir::new("shield-run-csv").expect("tempdir");
+        let workspace = Workspace {
+            output_dir: dir.path().to_path_buf(),
+            checkout: cwd,
+            work_dir: dir.path().to_path_buf(),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::ZERO,
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+        let csv = CsvResultWriter::open(
+            &workspace.output_dir,
+            Path::new("live.csv"),
+            None,
+            "2026-06-02T11:24:56Z",
+        )
+        .expect("open csv");
+        let report = execute_tests(
+            &MockRunner,
+            &workspace,
+            &wasmer.runtime,
+            None,
+            Some(&csv),
+            None,
+            Mode::Capture,
+            Duration::from_secs(30),
+        )
+        .expect("execute_tests should succeed");
+
+        assert_eq!(report.results.len(), 6);
+        let csv = fs::read_to_string(dir.path().join("live.csv")).expect("read csv");
+        assert!(csv.starts_with("suite, test, \"2026-06-02 11:24:56\"\n"));
+        assert!(csv.contains("pass_a, pass_a, PASS\n"));
+        assert!(csv.contains("fail_c, fail_c, FAIL\n"));
+        assert!(csv.contains("timeout_e, timeout_e, TIMEOUT\n"));
+    }
+
+    #[test]
+    fn csv_results_merge_appends_run_column() {
+        let dir = TempDir::new("shield-run-csv-merge").expect("tempdir");
+        fs::write(
+            dir.path().join("old.csv"),
+            "suite, test, \"2026-06-02 11:24:56\", \"2026-06-02 12:14:16\"\npass_a, pass_a, PASS, FAIL\nold_suite, old_test, SKIP, PASS\n",
+        )
+        .expect("write old csv");
+        let csv = CsvResultWriter::open(
+            dir.path(),
+            Path::new("new.csv"),
+            Some(Path::new("old.csv")),
+            "2026-06-02T15:20:35Z",
+        )
+        .expect("open csv");
+        csv.write_result(
+            "pass_a",
+            &TestResult {
+                id: "pass_a".into(),
+                status: Status::Pass,
+            },
+        )
+        .expect("write result");
+        csv.write_result(
+            "new_suite",
+            &TestResult {
+                id: "new_test".into(),
+                status: Status::Fail,
+            },
+        )
+        .expect("write result");
+
+        let csv = fs::read_to_string(dir.path().join("new.csv")).expect("read csv");
+        assert!(csv.starts_with(
+            "suite, test, \"2026-06-02 11:24:56\", \"2026-06-02 12:14:16\", \"2026-06-02 15:20:35\"\n"
+        ));
+        assert!(csv.contains("old_suite, old_test, SKIP, PASS, \n"));
+        assert!(csv.contains("pass_a, pass_a, PASS, FAIL, PASS\n"));
+        assert!(csv.contains("new_suite, new_test, , , FAIL\n"));
+    }
+
+    #[test]
+    fn python_csv_suite_uses_module_name() {
+        let result = TestResult {
+            id: "test.test_pathlib.test_pathlib.PathSubclassTest.test_glob_many_open_files".into(),
+            status: Status::Fail,
+        };
+        let job = TestJob {
+            id: result.id.clone(),
+            tests: vec![result.id.clone()],
+        };
+
+        assert_eq!(
+            suite_for_result(&PythonRunner::new(), &job, &result),
+            "test.test_pathlib"
+        );
+    }
+
+    #[test]
+    fn debug_job_header_includes_test_progress() {
+        let job = TestJob {
+            id: "test.test_pathlib.case".into(),
+            tests: vec!["test.test_pathlib.case".into()],
+        };
+        assert_eq!(
+            debug_job_header(&job, 3, 1510, Duration::from_secs(30)),
+            "=== 3/1510 timeout=30s: test.test_pathlib.case ==="
+        );
+    }
+
+    #[test]
+    fn debug_job_header_uses_range_for_batched_jobs() {
+        let job = TestJob {
+            id: "test.test_pathlib".into(),
+            tests: vec!["a".into(), "b".into(), "c".into()],
+        };
+        assert_eq!(
+            debug_job_header(&job, 7, 1510, Duration::from_secs(30)),
+            "=== 7-9/1510 timeout=30s: test.test_pathlib ==="
+        );
     }
 
     #[test]
@@ -999,6 +1398,8 @@ mod tests {
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
                 compare_ref: "origin/main".into(),
+                csv: None,
+                merge: None,
             },
             "1970-01-01T00:00:00Z",
             &PythonRunner::new(),
@@ -1030,6 +1431,8 @@ mod tests {
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
                 compare_ref: "origin/main".into(),
+                csv: None,
+                merge: None,
             },
             "1970-01-01T00:00:00Z",
             &PhpRunner,
@@ -1060,6 +1463,8 @@ mod tests {
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
                 compare_ref: "origin/main".into(),
+                csv: None,
+                merge: None,
             },
             "1970-01-01T00:00:00Z",
             &NodeRunner,
@@ -1092,6 +1497,8 @@ mod tests {
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30000),
                 compare_ref: "origin/main".into(),
+                csv: None,
+                merge: None,
             },
             "1970-01-01T00:00:00Z",
             &RustRunner,
