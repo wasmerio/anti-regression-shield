@@ -39,7 +39,11 @@ const LANGS: [LangConfig; 4] = [
     },
 ];
 
-const ACTIVE_LANGS: [&str; 3] = ["python", "node", "rust"];
+const ACTIVE_LANGS: [&str; 2] = ["python", "rust"];
+
+fn is_active_lang(name: &str) -> bool {
+    ACTIVE_LANGS.contains(&name)
+}
 
 pub struct Verdict {
     pub body: String,
@@ -111,7 +115,7 @@ pub fn build_verdict(
 ) -> Result<Verdict> {
     let languages = LANGS
         .into_iter()
-        .filter(|lang| ACTIVE_LANGS.contains(&lang.name))
+        .filter(|lang| is_active_lang(lang.name))
         .map(|lang| collect_language_verdict(output_dir, lang, target_sha))
         .collect::<Result<Vec<_>>>()?;
     let kind = verdict_kind(&languages);
@@ -807,44 +811,6 @@ mod tests {
                 failure_example: None,
             },
             LanguageVerdict {
-                config: LANGS[1],
-                decisive: false,
-                total_tests: 16_030,
-                pass_rate_now: 51.2,
-                delta_pass: 13,
-                delta_fail: -11,
-                delta_timeout: -2,
-                delta_skip: 0,
-                delta_crash: 0,
-                transitions: transitions([("FAIL->PASS", 3), ("TIMEOUT->PASS", 2)]),
-                improvements: vec![
-                    change("parallel/test-fs-stat.js", Status::Fail, Status::Pass),
-                    change(
-                        "parallel/test-fs-symlink-dir-junction-relative.js",
-                        Status::Fail,
-                        Status::Pass,
-                    ),
-                    change(
-                        "parallel/test-stream2-httpclient-response-end.js",
-                        Status::Timeout,
-                        Status::Pass,
-                    ),
-                    change(
-                        "parallel/test-http2-server-destroy-before-write.js",
-                        Status::Fail,
-                        Status::Pass,
-                    ),
-                    change(
-                        "parallel/test-whatwg-url-custom-searchparams-stringifier.js",
-                        Status::Timeout,
-                        Status::Pass,
-                    ),
-                ],
-                regressions: vec![],
-                crash_example: None,
-                failure_example: None,
-            },
-            LanguageVerdict {
                 config: LANGS[2],
                 decisive: true,
                 total_tests: 19_636,
@@ -960,41 +926,6 @@ mod tests {
                     status_after: Status::Fail,
                     output: Some(
                         "======================================================================\nFAIL: test_move_symlink_to_file (test.test_shutil.TestMove)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/usr/lib/python3.11/test/test_shutil.py\", line 412, in test_move_symlink_to_file\n    self.assertTrue(os.path.islink(dst))\nAssertionError: False is not true"
-                            .to_string(),
-                    ),
-                }),
-            },
-            LanguageVerdict {
-                config: LANGS[1],
-                decisive: false,
-                total_tests: 16_024,
-                pass_rate_now: 51.1,
-                delta_pass: -2,
-                delta_fail: 1,
-                delta_timeout: 1,
-                delta_skip: 0,
-                delta_crash: 0,
-                transitions: transitions([("PASS->FAIL", 1)]),
-                improvements: vec![],
-                regressions: vec![change(
-                    "parallel/test-fs-symlink.js",
-                    Status::Pass,
-                    Status::Fail,
-                )],
-                crash_example: None,
-                failure_example: Some(FailureExample {
-                    repro_command: Some(
-                        "shield run --lang node --wasmer [WASMER BINARY] parallel/test-fs-symlink.js"
-                            .to_string(),
-                    ),
-                    test_source: Some(link(
-                        "test-fs-symlink.js",
-                        "https://github.com/nodejs/node/blob/main/test/parallel/test-fs-symlink.js",
-                    )),
-                    status_before: Status::Pass,
-                    status_after: Status::Fail,
-                    output: Some(
-                        "AssertionError [ERR_ASSERTION]: expected symbolic link to exist\n    at testValidSymLink (/node/test/parallel/test-fs-symlink.js:81:10)\n    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)"
                             .to_string(),
                     ),
                 }),
