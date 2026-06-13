@@ -29336,7 +29336,7 @@
   "test.test_socket.SendfileUsingSendfileTest.testEmptyFileSend": "PASS",
   "test.test_socket.SendfileUsingSendfileTest.testNonBlocking": "PASS",
   "test.test_socket.SendfileUsingSendfileTest.testNonRegularFile": "PASS",
-  "test.test_socket.SendfileUsingSendfileTest.testOffset": "TIMEOUT",
+  "test.test_socket.SendfileUsingSendfileTest.testOffset": "FAIL",
   "test.test_socket.SendfileUsingSendfileTest.testRegularFile": "FAIL",
   "test.test_socket.SendfileUsingSendfileTest.testWithTimeout": "FAIL",
   "test.test_socket.SendfileUsingSendfileTest.testWithTimeoutTriggeredSend": "PASS",
