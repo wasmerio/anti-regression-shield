@@ -4,27 +4,28 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 1210,
-    "FLAKY": 247,
+    "FAIL": 1170,
+    "FLAKY": 231,
     "PASS": 21068,
-    "SKIP": 59,
+    "SKIP": 99,
     "TIMEOUT": 0
   },
   "crashes": {
-    "root::compiletest::compiletest-96aab6afeb356a08": "crash: process: proc=000150 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/810c7bfe89ffc184.wasmu -- --test-threads=1\nthread 'main' panicked at src/tools/compiletest/src/lib.rs:224:19:\nUnrecognizedOption(\"test-threads\")\nstack backtrace:\n",
-    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: process: proc=000124 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/f8a2e87d0e30b18e.wasmu -- --test-threads=1\nThread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-92a765577620e255.wasm[12983]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-92a765577620e255.wasm[12984]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-92a765577620e255.wasm[13001]:0xffffffff)\n",
-    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: process: proc=000133 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/e3692d635d0d0084.wasmu -- --test-threads=1\nthread '<unnamed>' panicked at compiler/rustc_thread_pool/src/job.rs:129:29:\nmisaligned pointer dereference: address must be a multiple of 0x4 but is 0x1\nstack backtrace:\nthread caused non-unwinding panic. aborting.\nThread 13 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-cde0545fd2382fc5.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-cde0545fd2382fc5.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-cde0545fd2382fc5.wasm[15825]:0xffffffff)\nThread 16 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-cde0545fd2382fc5.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-cde0545fd2382fc5.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-cde0545fd2382fc5.wasm[15825]:0xffffffff)\n"
+    "root::compiletest::compiletest-96aab6afeb356a08": "crash: process: proc=000150 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/52cbcc0b6bb64b8a.wasmu -- --test-threads=1\nthread 'main' panicked at src/tools/compiletest/src/lib.rs:224:19:\nUnrecognizedOption(\"test-threads\")\nstack backtrace:\n",
+    "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: process: proc=000124 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --env RUST_BACKTRACE=full --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout:/home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout --cwd /home/runner/work/anti-regression-shield/anti-regression-shield/.work/rust/checkout /home/runner/work/anti-regression-shield/anti-regression-shield/.cache/rust/wasmu/4e9f1431d7483e4d.wasmu -- --test-threads=1\nThread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-92a765577620e255.wasm[12983]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-92a765577620e255.wasm[12984]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-92a765577620e255.wasm[13001]:0xffffffff)\n"
   },
   "run": {
-    "finished_at": "2026-06-15T04:44:33Z",
-    "started_at": "2026-06-15T03:26:06Z"
+    "finished_at": "2026-06-16T04:42:06Z",
+    "started_at": "2026-06-16T03:23:47Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
   },
-  "transitions": {},
+  "transitions": {
+    "FAIL->SKIP": 40
+  },
   "wasmer": {
-    "commit": "127868e2a131e3f20e0e5056cd596ec752f4958d",
+    "commit": "8bb7ff86b7e0d7ae45de37d03baf391523ba16ca",
     "ref": "main",
     "repo": "https://github.com/wasmerio/wasmer.git"
   }

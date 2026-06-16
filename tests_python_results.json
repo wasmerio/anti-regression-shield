@@ -4392,7 +4392,7 @@
   "test.test_asyncio.test_events.EPollEventLoopTests.test_close_running_event_loop": "PASS",
   "test.test_asyncio.test_events.EPollEventLoopTests.test_connect_accepted_socket": "PASS",
   "test.test_asyncio.test_events.EPollEventLoopTests.test_connect_accepted_socket_ssl_timeout_for_plain_socket": "PASS",
-  "test.test_asyncio.test_events.EPollEventLoopTests.test_create_connection": "TIMEOUT",
+  "test.test_asyncio.test_events.EPollEventLoopTests.test_create_connection": "PASS",
   "test.test_asyncio.test_events.EPollEventLoopTests.test_create_connection_local_addr": "PASS",
   "test.test_asyncio.test_events.EPollEventLoopTests.test_create_connection_local_addr_in_use": "PASS",
   "test.test_asyncio.test_events.EPollEventLoopTests.test_create_connection_local_addr_nomatch_family": "PASS",
