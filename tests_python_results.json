@@ -25955,7 +25955,7 @@
   "test.test_pty.PtyTest.test_master_read": "FAIL",
   "test.test_pty.PtyTest.test_openpty": "FAIL",
   "test.test_pty.PtyTest.test_spawn_doesnt_hang": "FAIL",
-  "test.test_pty.SmallPtyTests.test__copy_to_each": "FAIL",
+  "test.test_pty.SmallPtyTests.test__copy_to_each": "PASS",
   "test.test_pty.SmallPtyTests.test__restore_tty_mode_normal_return": "PASS",
   "test.test_pulldom.PullDOMTestCase.test_comment": "FAIL",
   "test.test_pulldom.PullDOMTestCase.test_end_document": "FAIL",
