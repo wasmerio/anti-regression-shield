@@ -4,27 +4,27 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 3590,
-    "FLAKY": 2244,
-    "PASS": 27737,
-    "SKIP": 2591,
-    "TIMEOUT": 4002
+    "FAIL": 3597,
+    "FLAKY": 2186,
+    "PASS": 27736,
+    "SKIP": 2593,
+    "TIMEOUT": 3994
   },
   "crashes": {},
   "python": {
     "commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-06-19T04:22:59Z",
-    "started_at": "2026-06-19T03:23:49Z"
+    "finished_at": "2026-06-20T04:13:06Z",
+    "started_at": "2026-06-20T03:20:15Z"
   },
   "transitions": {
-    "FAIL->PASS": 1,
-    "FAIL->TIMEOUT": 1,
-    "PASS->TIMEOUT": 1
+    "PASS->FAIL": 1,
+    "TIMEOUT->FAIL": 6,
+    "TIMEOUT->SKIP": 2
   },
   "wasmer": {
-    "commit": "04bae78d68a6625ab0c9ee8a4ec3cb8450ee9030",
+    "commit": "f001518880c2dd4cbcdc8b85fcc683c7abc53e81",
     "ref": "main",
     "repo": "https://github.com/wasmerio/wasmer.git"
   }
