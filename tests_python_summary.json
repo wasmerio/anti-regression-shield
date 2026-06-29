@@ -5,7 +5,7 @@
   },
   "counts": {
     "FAIL": 3609,
-    "FLAKY": 2168,
+    "FLAKY": 2167,
     "PASS": 27749,
     "SKIP": 2640,
     "TIMEOUT": 3922
@@ -15,15 +15,10 @@
     "commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-06-28T04:10:09Z",
-    "started_at": "2026-06-28T03:21:01Z"
+    "finished_at": "2026-06-29T04:21:41Z",
+    "started_at": "2026-06-29T03:23:25Z"
   },
-  "transitions": {
-    "FAIL->PASS": 1,
-    "PASS->FAIL": 1,
-    "TIMEOUT->FAIL": 5,
-    "TIMEOUT->PASS": 10
-  },
+  "transitions": {},
   "wasmer": {
     "commit": "0d18abb81e3c7cbfa5e840883ab60e12a09e950f",
     "ref": "main",
