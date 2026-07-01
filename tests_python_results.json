@@ -29330,7 +29330,7 @@
   "test.test_socket.SendfileUsingSendTest.testWithTimeout": "PASS",
   "test.test_socket.SendfileUsingSendTest.testWithTimeoutTriggeredSend": "PASS",
   "test.test_socket.SendfileUsingSendTest.test_errors": "PASS",
-  "test.test_socket.SendfileUsingSendfileTest.testCount": "FAIL",
+  "test.test_socket.SendfileUsingSendfileTest.testCount": "PASS",
   "test.test_socket.SendfileUsingSendfileTest.testCountSmall": "PASS",
   "test.test_socket.SendfileUsingSendfileTest.testCountWithOffset": "PASS",
   "test.test_socket.SendfileUsingSendfileTest.testEmptyFileSend": "PASS",
