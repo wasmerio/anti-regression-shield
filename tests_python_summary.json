@@ -4,25 +4,24 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 3593,
-    "FLAKY": 2198,
-    "PASS": 27750,
-    "SKIP": 2593,
-    "TIMEOUT": 3984
+    "FAIL": 3603,
+    "FLAKY": 2180,
+    "PASS": 27749,
+    "SKIP": 2640,
+    "TIMEOUT": 3928
   },
   "crashes": {},
   "python": {
     "commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-07-02T04:24:22Z",
-    "started_at": "2026-07-02T03:18:50Z"
+    "finished_at": "2026-07-03T04:19:42Z",
+    "started_at": "2026-07-03T03:15:13Z"
   },
   "transitions": {
-    "FAIL->PASS": 1,
-    "FAIL->TIMEOUT": 14,
-    "PASS->TIMEOUT": 1,
-    "SKIP->TIMEOUT": 47
+    "PASS->FAIL": 1,
+    "TIMEOUT->FAIL": 9,
+    "TIMEOUT->SKIP": 47
   },
   "wasmer": {
     "commit": "8bef46a55967685619f09df09a8f161739a68b26",
